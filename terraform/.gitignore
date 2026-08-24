@@ -1,0 +1,14 @@
+# State records what Terraform believes exists. Lose it and Terraform forgets
+# it built anything — `destroy` can no longer clean up, and you are deleting
+# resources by hand in the console.
+#
+# Workspace states live in terraform.tfstate.d/<workspace>/, so this covers
+# every environment at once.
+.terraform/
+terraform.tfstate.d/
+*.tfstate
+*.tfstate.*
+tfplan
+
+# Written by `make apply`. Regenerated every time; never edit it.
+inventory/
