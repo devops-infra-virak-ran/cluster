@@ -115,9 +115,18 @@ resource "aws_ecr_repository_policy" "pull" {
 # ─── CI push policy ──────────────────────────────────────────────────────────
 # Attach to the Jenkins agent role so builds can push images without a
 # long-lived registry password.
+#
+# Skipped when there are no repositories. The PushAndPull statement below
+# resolves its Resource list from aws_ecr_repository.this, so with an empty
+# catalogue it becomes Resource = [] — and IAM rejects that outright:
+#
+#   MalformedPolicyDocument: Policy statement must contain resources
+#
+# Terraform cannot catch this at plan time, because the policy body is only
+# assembled during apply. It fails after everything else has been created.
 
 resource "aws_iam_policy" "push" {
-  count       = var.create_push_policy ? 1 : 0
+  count       = var.create_push_policy && length(var.repositories) > 0 ? 1 : 0
   name        = "${local.name_prefix}-ecr-push"
   description = "Push images to the ${var.repository_prefix} repositories"
 
