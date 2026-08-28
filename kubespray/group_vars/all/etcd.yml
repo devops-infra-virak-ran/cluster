@@ -1,0 +1,23 @@
+# Kubespray — etcd.
+#
+# etcd_data_dir is left at its default, /var/lib/etcd. When
+# etcd_volume_size > 0 the compute module attaches a dedicated volume and
+# cloud-init mounts it exactly there, so a separate etcd disk needs no
+# configuration on this side.
+
+etcd_deployment_type: host
+etcd_memory_limit: 2G
+etcd_quota_backend_bytes: 2147483648
+
+# Compaction and defrag keep the database under the backend quota. Hitting the
+# quota puts the cluster into a read-only alarm, and every write fails until
+# someone clears it by hand.
+etcd_compaction_retention: "8"
+etcd_metrics: basic
+
+# Kubespray already defaults these to 250/5000 (raised from etcd's own 100/1000
+# some releases ago) because EBS latency spikes trigger spurious leader
+# elections. Restated here so that a future Kubespray lowering them does not
+# quietly change the behaviour of this cluster.
+etcd_heartbeat_interval: "250"
+etcd_election_timeout: "5000"

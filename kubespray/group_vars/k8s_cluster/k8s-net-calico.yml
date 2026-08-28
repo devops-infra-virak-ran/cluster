@@ -1,0 +1,19 @@
+# Kubespray — Calico.
+#
+# The default backend is already vxlan, and the default ipip mode is already
+# Never. The one change is the vxlan mode.
+
+# Always → CrossSubnet: leave pod traffic between nodes in the same subnet
+# unencapsulated, and encapsulate only what crosses subnets. Most traffic in
+# this cluster is same-subnet, and it keeps the VXLAN overhead off it.
+#
+# This works because the compute module sets source_dest_check = false on every
+# node: without that, EC2 drops the unencapsulated packets, since their source
+# address is a pod IP the instance does not own.
+calico_vxlan_mode: CrossSubnet
+
+# calico_mtu is deliberately not set. Calico detects the host MTU — 9001 on
+# ENA, since jumbo frames work inside a VPC — and subtracts the encapsulation
+# overhead itself. A hardcoded number is a number that goes silently wrong the
+# first time the instance type changes, and an MTU that is too large fails as
+# hung connections for large payloads rather than as an obvious error.

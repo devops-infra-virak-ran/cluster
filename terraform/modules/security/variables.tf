@@ -36,7 +36,14 @@ variable "apiserver_allowed_cidrs" {
 
 variable "cloud_provider_integration" {
   type        = bool
-  description = "Grant nodes the EBS/ELB permissions the AWS cloud provider needs"
+  description = <<-DESC
+    Grant nodes the EC2 permissions the AWS EBS CSI driver needs to provision,
+    attach and delete PersistentVolumes. Turn it off for a cluster that has no
+    storage driver.
+
+    It does not grant ELB permissions: Service type=LoadBalancer needs the AWS
+    cloud controller manager, which Kubespray v2.31.0 does not install.
+  DESC
   default     = true
 }
 

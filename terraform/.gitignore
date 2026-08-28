@@ -10,5 +10,5 @@ terraform.tfstate.d/
 *.tfstate.*
 tfplan
 
-# Written by `make apply`. Regenerated every time; never edit it.
-inventory/
+# The Kubespray inventory is written by `make apply` into
+# ../kubespray/inventory/<workspace>/, which kubespray/.gitignore covers.

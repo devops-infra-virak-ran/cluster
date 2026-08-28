@@ -1,15 +1,18 @@
 # devops-01
 
-AWS infrastructure only. One Terraform root, one environment per workspace.
+AWS infrastructure and the Kubernetes cluster on top of it. One Terraform root,
+one environment per workspace.
 
 ```bash
-make plan    WORKSPACE=dev
-make apply   WORKSPACE=dev
-make destroy WORKSPACE=dev
+make plan       WORKSPACE=dev
+make apply      WORKSPACE=dev
+make cluster-up WORKSPACE=dev    # the above, then Kubespray on the nodes
+make destroy    WORKSPACE=dev
 ```
 
-No Helm, no Kubernetes, no other cloud. This directory builds machines and the
-network around them, and stops there.
+No Helm, no other cloud, and nothing that deploys workloads. This directory
+builds machines, the network around them, and a cluster on them — and stops
+there.
 
 ---
 
@@ -60,7 +63,12 @@ terraform/
     security/                security groups, IAM roles
     compute/                 bastion, control-plane and worker instances
     registry/                ECR repositories
-  inventory/hosts.ini        written by apply — the bridge to installing Kubernetes
+kubespray/
+  run.sh                     runs playbooks from the pinned container image
+  group_vars/                cluster configuration — read the aws.yml first
+  storage/                   the default StorageClass
+  inventory/<workspace>/     written by apply, one per environment
+scripts/kubeconfig.sh        kubectl access, tunnelled through the bastion
 ```
 
 Read them in that order. `network` is the only one that makes sense alone;
@@ -152,22 +160,46 @@ ssh-keygen -t ed25519 -C "learn" -f ~/.ssh/id_ed25519
 
 ---
 
-## What this is not
+## The cluster
 
-It does not install Kubernetes. `make apply` writes
-`terraform/inventory/hosts.ini` — every node's address, grouped the way Ansible
-wants — and that is where the next thing picks up. Nothing in this directory
-reads it yet.
+`make apply` writes `kubespray/inventory/<workspace>/inventory.ini` — every
+node's address, grouped the way Ansible wants — and Kubespray reads it from
+there.
 
-The full platform in [`../devops/`](../devops/) is this plus Kubespray, Helm, a
-service catalogue, monitoring and multi-cloud deploy targets. Come back to it
-when this directory holds no surprises.
+```bash
+make cluster-up WORKSPACE=dev    # apply, pull, ping, then cluster.yml
+make kubeconfig WORKSPACE=dev    # kubectl, through the bastion
+make storage    WORKSPACE=dev    # EBS CSI driver + a default StorageClass
+```
+
+The first `cluster.yml` takes 20-40 minutes. Everything runs from
+`quay.io/kubespray/kubespray:v2.31.0`, so the only tool to install is Docker.
+
+Two things this cluster deliberately does not have — both explained in
+[`kubespray/README.md`](kubespray/README.md):
+
+- **No cloud controller manager.** Kubernetes dropped the in-tree AWS provider
+  in 1.31 and Kubespray v2.31.0 ships no replacement, so `Service
+  type=LoadBalancer` stays Pending. Ingress is the ALB pointed at the NodePort
+  range.
+- **No storage until `make storage`.** Kubespray's bundled EBS CSI driver
+  points at an image last published in 2021; the upstream release is installed
+  instead.
+
+Before tearing an environment down, `make cluster-down` — Kubernetes creates
+ELBs and EBS volumes that Terraform does not know about, and they keep billing
+after `make destroy`, as well as blocking the VPC from deleting.
+
+The full platform in [`../devops/`](../devops/) is this plus Helm, a service
+catalogue, monitoring and multi-cloud deploy targets. Come back to it when this
+directory holds no surprises.
 
 ---
 
-## Two fixes already applied here
+## Three fixes already applied here
 
-The copied configuration did not work. Both bugs also exist in `../devops/`:
+The copied configuration did not work. All three bugs also exist in
+`../devops/`:
 
 **It could not validate.** `main.tf` read `../helm/services.yaml` to decide
 which ECR repositories to create — a file that does not exist in this tree.
@@ -178,6 +210,21 @@ Replaced with a plain `services` variable in `env/<workspace>.tfvars`.
 `hvm-ssd`. The storage path is tied to the release. Now on 24.04, which is
 where the gp3 images actually are, and behind a variable so you can check a
 change before applying it:
+
+**The node IAM policy denied every volume the cluster would create.** One
+condition covered every action:
+
+```hcl
+Condition = { StringEquals = {
+  "aws:ResourceTag/kubernetes.io/cluster/${var.cluster_name}" = "owned"
+} }
+```
+
+A resource that does not exist yet carries no tags, so the condition is false
+for `ec2:CreateVolume` and the call is denied. Every PVC would have sat Pending
+with an AccessDenied buried in a csi-provisioner log. Replaced with the EBS CSI
+driver's own published policy, which matches on `aws:RequestTag` while creating
+and on the tags the driver writes when deleting.
 
 ```bash
 aws ec2 describe-images --owners 099720109477 --region us-east-1 \

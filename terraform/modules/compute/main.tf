@@ -134,7 +134,7 @@ resource "aws_instance" "control_plane" {
     delete_on_termination = true
   }
 
-  user_data = local.node_user_data
+  user_data = local.control_plane_user_data
 
   tags = merge(local.common_tags, local.cluster_tag, {
     Name = "${local.name_prefix}-cp-${count.index + 1}"
@@ -197,7 +197,7 @@ resource "aws_instance" "worker" {
     delete_on_termination = true
   }
 
-  user_data = local.node_user_data
+  user_data = local.worker_user_data
 
   tags = merge(local.common_tags, local.cluster_tag, {
     Name = "${local.name_prefix}-worker-${count.index + 1}"
@@ -214,7 +214,7 @@ resource "aws_instance" "worker" {
 # covers what has to be true before Ansible connects.
 
 locals {
-  node_user_data = <<-CLOUDINIT
+  node_cloud_config = <<-CLOUDINIT
     #cloud-config
     package_update: true
     packages:
@@ -238,4 +238,46 @@ locals {
       - swapoff -a
       - sed -i '/ swap / s/^/#/' /etc/fstab
   CLOUDINIT
+
+  # Mount the dedicated etcd volume. Control-plane nodes only: it is the one
+  # place the two instance roles differ, and a worker would spend two minutes
+  # waiting for a disk that is never coming.
+  #
+  # The volume is attached as /dev/sdf, but a Nitro instance (t3, m5, c5 …)
+  # renames every EBS device to /dev/nvmeXn1 in an order AWS does not promise,
+  # so the path cannot be hardcoded. What is reliable is the shape: the root
+  # disk has partitions, this one has none and no filesystem.
+  #
+  # /var/lib/etcd is Kubespray's etcd_data_dir default, so mounting there is
+  # the whole integration — no group_vars entry, nothing to keep in sync.
+  etcd_disk_mount = <<-EOT
+  - |
+    # The attachment lands moments after the instance boots and cloud-init
+    # can get here first, so wait for the device instead of silently
+    # leaving etcd on the root disk.
+    blank_disk() {
+      for c in $(lsblk -dpno NAME,TYPE | awk '$2 == "disk" { print $1 }'); do
+        [ -n "$(lsblk -no NAME "$c" | tail -n +2)" ] && continue
+        blkid "$c" >/dev/null 2>&1 && continue
+        echo "$c"; return 0
+      done
+      return 1
+    }
+    for _ in $(seq 60); do d=$(blank_disk) && break; sleep 2; done
+    if [ -n "$d" ]; then
+      mkfs.ext4 -L etcd "$d"
+      mkdir -p /var/lib/etcd
+      echo "UUID=$(blkid -s UUID -o value "$d") /var/lib/etcd ext4 defaults,noatime 0 2" >> /etc/fstab
+      mount /var/lib/etcd
+    fi
+  EOT
+
+  worker_user_data = local.node_cloud_config
+
+  # indent() leaves the first line alone, so it gets its two spaces by hand.
+  # Without them the runcmd entry lands at column 0 and cloud-init reads it as
+  # a new top-level key instead of another command.
+  control_plane_user_data = var.etcd_volume_size > 0 ? (
+    "${local.node_cloud_config}  ${indent(2, trimspace(local.etcd_disk_mount))}\n"
+  ) : local.node_cloud_config
 }

@@ -1,0 +1,18 @@
+# Kubespray — add-ons.
+#
+# Deliberately almost empty. This directory builds a cluster; what runs on it
+# is a separate decision, made where the workloads are.
+
+# Needed by `kubectl top` and by any HorizontalPodAutoscaler.
+metrics_server_enabled: true
+
+# Not installed here, and why:
+#
+#   ingress controller  — Kubespray no longer ships an nginx ingress role, and
+#                         Service type=LoadBalancer cannot work without a cloud
+#                         controller manager (see group_vars/all/aws.yml).
+#                         Ingress is the ALB Terraform points at the NodePort
+#                         range.
+#   EBS CSI driver      — `make storage`, from upstream. Kubespray's copy is
+#                         pinned to an abandoned image.
+#   cert-manager, Helm  — nothing in this directory deploys workloads yet.

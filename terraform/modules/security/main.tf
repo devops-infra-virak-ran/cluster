@@ -230,8 +230,8 @@ resource "aws_vpc_security_group_egress_rule" "worker_all" {
 
 # ─── Node IAM ────────────────────────────────────────────────────────────────
 # Attached to every cluster node: SSM for keyless shell access, ECR pull for
-# images, and (when cloud_provider_integration is on) the describe/attach
-# permissions the in-tree AWS provider needs for EBS volumes and ELBs.
+# images, and (when cloud_provider_integration is on) the EC2 permissions the
+# EBS CSI driver needs to back PersistentVolumeClaims with real volumes.
 
 resource "aws_iam_role" "node" {
   name = "${local.name_prefix}-node-role"
@@ -272,49 +272,151 @@ resource "aws_iam_role_policy" "node_ecr_pull" {
   })
 }
 
-resource "aws_iam_role_policy" "node_cloud_provider" {
+# EBS CSI driver permissions, taken from the driver's own example policy
+# (kubernetes-sigs/aws-ebs-csi-driver, docs/example-iam-policy.json) rather
+# than written by hand — the conditions are the subtle part.
+#
+# What it replaced did not work. Every action sat under one condition:
+#
+#   "aws:ResourceTag/kubernetes.io/cluster/<name>" = "owned"
+#
+# A resource that does not exist yet carries no tags, so the condition is false
+# for ec2:CreateVolume and the call is denied. Every PVC would have stayed
+# Pending with an AccessDenied buried in the csi-provisioner log. The driver
+# tags what it creates with ebs.csi.aws.com/cluster and CSIVolumeName, which is
+# what the delete and snapshot statements below match on instead.
+#
+# Service type=LoadBalancer is deliberately absent: provisioning an ELB from
+# inside the cluster needs the AWS cloud controller manager, which Kubespray
+# v2.31.0 does not ship — external_cloud_provider accepts only hcloud,
+# huaweicloud, oci, openstack, vsphere and manual. Ingress here is the ALB in
+# front of the NodePort range, which Terraform owns.
+
+resource "aws_iam_role_policy" "node_ebs_csi" {
   count = var.cloud_provider_integration ? 1 : 0
-  name  = "${local.name_prefix}-node-cloud-provider"
+  name  = "${local.name_prefix}-node-ebs-csi"
   role  = aws_iam_role.node.id
 
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
       {
-        Sid    = "DescribeResources"
+        Sid    = "Describe"
         Effect = "Allow"
         Action = [
-          "ec2:Describe*",
-          "elasticloadbalancing:Describe*",
+          "ec2:DescribeAvailabilityZones",
+          "ec2:DescribeInstances",
+          "ec2:DescribeInstanceTypes",
+          "ec2:DescribeSnapshots",
+          "ec2:DescribeTags",
+          "ec2:DescribeVolumes",
+          "ec2:DescribeVolumesModifications",
+          "ec2:DescribeVolumeStatus",
         ]
         Resource = "*"
       },
       {
-        Sid    = "ManageVolumesAndLoadBalancers"
-        Effect = "Allow"
-        Action = [
-          "ec2:AttachVolume",
-          "ec2:DetachVolume",
-          "ec2:CreateVolume",
-          "ec2:DeleteVolume",
-          "ec2:CreateSnapshot",
-          "ec2:DeleteSnapshot",
-          "ec2:CreateTags",
-          "ec2:ModifyInstanceAttribute",
-          "elasticloadbalancing:CreateLoadBalancer",
-          "elasticloadbalancing:DeleteLoadBalancer",
-          "elasticloadbalancing:RegisterTargets",
-          "elasticloadbalancing:DeregisterTargets",
-          "elasticloadbalancing:CreateTargetGroup",
-          "elasticloadbalancing:DeleteTargetGroup",
-          "elasticloadbalancing:ModifyTargetGroupAttributes",
-        ]
-        Resource = "*"
-
-        # Only touch resources that belong to this cluster.
+        Sid      = "SnapshotAndResizeVolumes"
+        Effect   = "Allow"
+        Action   = ["ec2:CreateSnapshot", "ec2:ModifyVolume"]
+        Resource = "arn:aws:ec2:*:*:volume/*"
+      },
+      {
+        Sid      = "AttachDetach"
+        Effect   = "Allow"
+        Action   = ["ec2:AttachVolume", "ec2:DetachVolume"]
+        Resource = ["arn:aws:ec2:*:*:volume/*", "arn:aws:ec2:*:*:instance/*"]
+      },
+      {
+        Sid      = "CreateVolumeFromSnapshot"
+        Effect   = "Allow"
+        Action   = ["ec2:CreateVolume"]
+        Resource = "arn:aws:ec2:*:*:snapshot/*"
+      },
+      {
+        # Tagging is only allowed as part of the create call that the driver
+        # makes, never as a standalone re-tag of something else.
+        Sid      = "TagOnCreate"
+        Effect   = "Allow"
+        Action   = ["ec2:CreateTags"]
+        Resource = ["arn:aws:ec2:*:*:volume/*", "arn:aws:ec2:*:*:snapshot/*"]
         Condition = {
           StringEquals = {
-            "aws:ResourceTag/kubernetes.io/cluster/${var.cluster_name}" = "owned"
+            "ec2:CreateAction" = ["CreateVolume", "CreateSnapshot"]
+          }
+        }
+      },
+      {
+        Sid      = "Untag"
+        Effect   = "Allow"
+        Action   = ["ec2:DeleteTags"]
+        Resource = ["arn:aws:ec2:*:*:volume/*", "arn:aws:ec2:*:*:snapshot/*"]
+      },
+      {
+        # aws:RequestTag, not aws:ResourceTag: the tag is being applied by this
+        # very call, so it is part of the request and not yet on a resource.
+        Sid      = "CreateVolumeTaggedByTheDriver"
+        Effect   = "Allow"
+        Action   = ["ec2:CreateVolume"]
+        Resource = "arn:aws:ec2:*:*:volume/*"
+        Condition = {
+          StringLike = {
+            "aws:RequestTag/ebs.csi.aws.com/cluster" = "true"
+          }
+        }
+      },
+      {
+        Sid      = "CreateVolumeForAPersistentVolumeClaim"
+        Effect   = "Allow"
+        Action   = ["ec2:CreateVolume"]
+        Resource = "arn:aws:ec2:*:*:volume/*"
+        Condition = {
+          StringLike = {
+            "aws:RequestTag/CSIVolumeName" = "*"
+          }
+        }
+      },
+      {
+        Sid      = "DeleteVolumesTheDriverCreated"
+        Effect   = "Allow"
+        Action   = ["ec2:DeleteVolume"]
+        Resource = "arn:aws:ec2:*:*:volume/*"
+        Condition = {
+          StringLike = {
+            "ec2:ResourceTag/ebs.csi.aws.com/cluster" = "true"
+          }
+        }
+      },
+      {
+        Sid      = "DeleteVolumesBackingAPersistentVolumeClaim"
+        Effect   = "Allow"
+        Action   = ["ec2:DeleteVolume"]
+        Resource = "arn:aws:ec2:*:*:volume/*"
+        Condition = {
+          StringLike = {
+            "ec2:ResourceTag/CSIVolumeName" = "*"
+          }
+        }
+      },
+      {
+        Sid      = "SnapshotVolumes"
+        Effect   = "Allow"
+        Action   = ["ec2:CreateSnapshot"]
+        Resource = "arn:aws:ec2:*:*:snapshot/*"
+        Condition = {
+          StringLike = {
+            "aws:RequestTag/CSIVolumeSnapshotName" = "*"
+          }
+        }
+      },
+      {
+        Sid      = "DeleteSnapshotsTheDriverCreated"
+        Effect   = "Allow"
+        Action   = ["ec2:DeleteSnapshot"]
+        Resource = "arn:aws:ec2:*:*:snapshot/*"
+        Condition = {
+          StringLike = {
+            "ec2:ResourceTag/CSIVolumeSnapshotName" = "*"
           }
         }
       },

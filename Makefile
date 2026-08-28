@@ -20,6 +20,21 @@ TF_DIR    := $(CURDIR)/terraform
 WORKSPACE ?= dev
 VARS      := env/$(WORKSPACE).tfvars
 
+# Kubespray runs from its official container image, so the only thing to
+# install is Docker. The tag pins Ansible, Python and the Kubespray release
+# together, which is why a laptop and a CI agent run identical code.
+#
+# This tag and kube_version in kubespray/group_vars/k8s_cluster/k8s-cluster.yml
+# are a pair. v2.31.0 supports Kubernetes 1.33.0 to 1.35.4; move both or
+# neither.
+KUBESPRAY_VERSION ?= v2.31.0
+KUBESPRAY         := $(CURDIR)/kubespray/run.sh $(WORKSPACE)
+INVENTORY         := $(CURDIR)/kubespray/inventory/$(WORKSPACE)/inventory.ini
+
+# Pinned upstream, not the copy Kubespray bundles — see kubespray/group_vars/
+# all/aws.yml for why.
+EBS_CSI_VERSION   ?= v1.64.0
+
 # Every workspace-aware target starts here. `-or-create` means the first
 # `make plan WORKSPACE=staging` just works instead of failing on a workspace
 # that does not exist yet.
@@ -43,7 +58,7 @@ help: ## Show this help
 	    pending = line; next } \
 	  /^[a-zA-Z0-9_-]+:.*?## / { \
 	    if (pending != "") { printf "\n\033[1m%s\033[0m\n", pending; pending = "" } \
-	    printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
+	    printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
 	@printf '\nWORKSPACE is \033[36m%s\033[0m. Available: ' "$(WORKSPACE)"
 	@ls $(TF_DIR)/env/*.tfvars 2>/dev/null | xargs -n1 basename | sed 's/.tfvars//' | tr '\n' ' '
 	@printf '\n\n'
@@ -68,7 +83,13 @@ apply-plan: ## Apply exactly the saved tfplan from `make plan` — no second pro
 
 .PHONY: destroy
 destroy: ## Tear the whole workspace down. Costs stop when this finishes.
-	@echo "This destroys everything in workspace '$(WORKSPACE)'."
+	@echo "This destroys everything in workspace '$(WORKSPACE)' that Terraform created."
+	@echo
+	@echo "It does NOT destroy what Kubernetes created: ELBs from Service"
+	@echo "type=LoadBalancer, EBS volumes from PersistentVolumeClaims. Those are"
+	@echo "not in Terraform state, they keep billing, and a leftover ELB holds an"
+	@echo "ENI that blocks the VPC from deleting. Run 'make cluster-down' first."
+	@echo
 	@read -p "Type the workspace name to confirm: " c; \
 	  if [[ "$$c" != "$(WORKSPACE)" ]]; then echo "aborted"; exit 1; fi
 	$(call tf,destroy -var-file=$(VARS))
@@ -91,7 +112,7 @@ workspaces: ## List workspaces, which is selected, and whether each holds anythi
 	  w=$$(echo "$$line" | tr -d '* '); \
 	  state="$(TF_DIR)/terraform.tfstate.d/$$w/terraform.tfstate"; \
 	  if [[ -s "$$state" ]]; then \
-	    held="$$(grep -c '"mode"' "$$state" 2>/dev/null || echo 0) resources"; \
+	    held="$$(grep -c '"mode"' "$$state" 2>/dev/null || true) resources"; \
 	  else held='empty'; fi; \
 	  if [[ -f "$(TF_DIR)/env/$$w.tfvars" ]]; then env='';  else env='  (no env/'"$$w"'.tfvars — not usable)'; fi; \
 	  printf '%s %-10s %-14s%s\n' "$$mark" "$$w" "$$held" "$$env"; \
@@ -129,6 +150,79 @@ cost: ## What this workspace runs to per month, from the notes in its tfvars
 	  echo "  no cost notes in $(VARS)"
 
 
+# ─── Cluster ─────────────────────────────────────────────────────────────────
+# Terraform builds the machines; Kubespray turns them into Kubernetes. Every
+# target here carries WORKSPACE through to a per-workspace inventory, so
+# `make kubespray-deploy WORKSPACE=prod` cannot reach dev's nodes.
+
+.PHONY: cluster-up
+cluster-up: apply kubespray-pull kubespray-ping kubespray-deploy ## Infrastructure, then Kubernetes on it (30-50 minutes)
+	@echo
+	@echo "Cluster is up. Next:"
+	@echo "    make kubeconfig WORKSPACE=$(WORKSPACE)   # kubectl access, through the bastion"
+	@echo "    make storage    WORKSPACE=$(WORKSPACE)   # EBS CSI driver + default StorageClass"
+
+.PHONY: inventory
+inventory: ## Rewrite this workspace's Kubespray inventory from live state
+	$(call tf,apply -var-file=$(VARS) -target=local_file.inventory -auto-approve)
+	@echo "wrote $(INVENTORY)"
+
+.PHONY: kubespray-pull
+kubespray-pull: ## Pull the pinned Kubespray image (~135 MB)
+	docker pull quay.io/kubespray/kubespray:$(KUBESPRAY_VERSION)
+
+.PHONY: kubespray-ping
+kubespray-ping: ## Check Ansible reaches every node through the bastion
+	$(KUBESPRAY) shell -c 'ansible -i /inventory/inventory.ini all -m ping'
+
+.PHONY: kubespray-deploy
+kubespray-deploy: ## Install Kubernetes on this workspace's nodes (20-40 minutes)
+	$(KUBESPRAY) cluster.yml
+
+.PHONY: kubespray-scale
+kubespray-scale: ## Add NODES=<name,name> to the cluster (raise the count, apply, then this)
+	@test -n "$(NODES)" || { echo "usage: make kubespray-scale NODES=worker3 WORKSPACE=$(WORKSPACE)"; exit 1; }
+	$(KUBESPRAY) scale.yml --limit=$(NODES)
+
+.PHONY: kubespray-remove
+kubespray-remove: ## Drain and remove NODES=<name> from the cluster
+	@test -n "$(NODES)" || { echo "usage: make kubespray-remove NODES=worker3 WORKSPACE=$(WORKSPACE)"; exit 1; }
+	$(KUBESPRAY) remove-node.yml -e node=$(NODES)
+
+.PHONY: kubespray-upgrade
+kubespray-upgrade: ## Upgrade Kubernetes one minor at a time (bump the image tag and kube_version together)
+	$(KUBESPRAY) upgrade-cluster.yml
+
+.PHONY: kubespray-reset
+kubespray-reset: ## Wipe Kubernetes off the nodes, leaving the EC2 instances
+	@echo "This removes Kubernetes from every node in workspace '$(WORKSPACE)'."
+	@read -p "Type the workspace name to confirm: " c; \
+	  if [[ "$$c" != "$(WORKSPACE)" ]]; then echo "aborted"; exit 1; fi
+	$(KUBESPRAY) reset.yml
+
+.PHONY: kubespray-shell
+kubespray-shell: ## A prompt inside the Kubespray image, inventory mounted
+	$(KUBESPRAY) shell
+
+.PHONY: kubeconfig
+kubeconfig: ## Write a kubeconfig for this workspace and tunnel to its apiserver
+	scripts/kubeconfig.sh $(WORKSPACE)
+
+.PHONY: storage
+storage: ## Install the EBS CSI driver and make gp3 the default StorageClass
+	kubectl apply -k "github.com/kubernetes-sigs/aws-ebs-csi-driver/deploy/kubernetes/overlays/stable/?ref=$(EBS_CSI_VERSION)"
+	kubectl apply -f kubespray/storage/gp3-storageclass.yaml
+
+.PHONY: cluster-down
+cluster-down: ## Delete what Kubernetes created in AWS — run this BEFORE destroy
+	@echo "Deleting LoadBalancer services and PersistentVolumeClaims in every namespace."
+	@echo "Terraform does not know about these; they outlive 'make destroy' and keep billing."
+	@read -p "Type the workspace name to confirm: " c; \
+	  if [[ "$$c" != "$(WORKSPACE)" ]]; then echo "aborted"; exit 1; fi
+	kubectl delete svc --all-namespaces --field-selector spec.type=LoadBalancer --ignore-not-found
+	kubectl delete pvc --all-namespaces --all --ignore-not-found
+	@echo "Wait for the volumes to disappear, then: make destroy WORKSPACE=$(WORKSPACE)"
+
 # ─── Unknown targets ─────────────────────────────────────────────────────────
 # Plain make answers a typo with "No rule to make target 'plane'. Stop.", which
 # tells you that you are wrong but not what would have been right. .DEFAULT
@@ -156,5 +250,6 @@ list: ## List every target, one per line
 # ─── Housekeeping ────────────────────────────────────────────────────────────
 
 .PHONY: clean
-clean: ## Remove saved plans and the rendered graph
+clean: ## Remove saved plans, the rendered graph and playbook artifacts
 	rm -f $(TF_DIR)/tfplan $(CURDIR)/graph.svg
+	rm -rf $(CURDIR)/kubespray/inventory/$(WORKSPACE)/artifacts
