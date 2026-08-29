@@ -35,9 +35,29 @@ kubectl_localhost: true
 artifacts_dir: "{{ inventory_dir }}/artifacts"
 
 # ─── Downloads ───────────────────────────────────────────────────────────────
-# Pull binaries and images once on the first control-plane node and push them
-# to the rest, rather than every node pulling the same gigabyte through the
-# same NAT gateway. This is why the control-plane root volume is 50 GB.
-download_run_once: true
+# Every node downloads its own binaries and images, straight out through the
+# NAT gateway.
+#
+# download_run_once: true is the tempting setting — fetch once, distribute to
+# the rest — but it only pays off when the Ansible controller is inside the
+# VPC. It is not: it is a container on a laptop, reaching the nodes through the
+# bastion. So "distribute" means every file takes this route
+#
+#   internet → cp1 → bastion → laptop → bastion → each of the 6 nodes
+#
+# crossing the bastion twice and a home uplink once. Measured, per file:
+#
+#   Download item                          10.7s
+#   Copy file back to ansible host cache   30.0s
+#   Copy file from cache to nodes          3m40s
+#
+# times dozens of files — and it wedged the SSH sessions through the bastion
+# badly enough that sudo stopped answering, which surfaces as
+# "Timeout (302s) waiting for privilege escalation prompt".
+#
+# Downloading on each node instead is parallel, keeps the bastion out of the
+# data path entirely, and costs about 12 GB of NAT transfer — some $0.55 at
+# $0.045/GB. Set this back to true if you ever run Ansible from the bastion.
+download_run_once: false
 download_localhost: false
 download_keep_remote_cache: true

@@ -108,6 +108,11 @@ ENGINE_ARGS=(
   --user "$(id -u):$(id -g)"
   -e HOME=/tmp
   -e ANSIBLE_HOST_KEY_CHECKING=False
+  # Every connection crosses the bastion, so a stall there costs a host.
+  # Kubespray's ansible.cfg sets timeout=300 and leaves retries at 0, which
+  # turns one dropped channel into a failed node 35 minutes into a run.
+  -e ANSIBLE_TIMEOUT="${ANSIBLE_TIMEOUT:-600}"
+  -e ANSIBLE_SSH_RETRIES="${ANSIBLE_SSH_RETRIES:-5}"
   --mount "type=bind,source=${INVENTORY_DIR},dst=/inventory"
   --mount "type=bind,source=${GROUP_VARS},dst=/inventory/group_vars,readonly"
   --mount "type=bind,source=${SSH_KEY},dst=${SSH_KEY},readonly"

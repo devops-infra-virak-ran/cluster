@@ -192,9 +192,30 @@ locals {
   # Nodes have no public addresses, so Ansible reaches them by hopping through
   # the bastion. Without a bastion the only way in is from inside the VPC, and
   # a direct connection is the right thing to write.
-  ssh_common_args = local.bastion_ip == null ? "-o StrictHostKeyChecking=accept-new" : join(" ", [
+  #
+  # Keepalives on both hops. A long Kubespray task leaves the channel idle for
+  # minutes; if it dies quietly, the next command blocks until Ansible's become
+  # timeout and the host fails with "Timeout waiting for privilege escalation
+  # prompt" — which says nothing about the connection being the problem.
+  #
+  # LogLevel=ERROR rather than -q on the ProxyCommand: -q also suppresses the
+  # reason the hop failed, leaving only "Connection closed by UNKNOWN port
+  # 65535" from the outer ssh, which is unactionable.
+  keepalive = "-o ServerAliveInterval=30 -o ServerAliveCountMax=10"
+
+  proxy_command = join(" ", [
+    "ssh -W %h:%p",
+    "-o LogLevel=ERROR",
     "-o StrictHostKeyChecking=accept-new",
-    "-o ProxyCommand=\"ssh -W %h:%p -q -o StrictHostKeyChecking=accept-new -i ${local.ssh_key} ${var.node_ssh_user}@${local.bastion_ip}\"",
+    "-o ConnectTimeout=30",
+    local.keepalive,
+    "-i ${local.ssh_key} ${var.node_ssh_user}@${local.bastion_ip}",
+  ])
+
+  ssh_common_args = local.bastion_ip == null ? "-o StrictHostKeyChecking=accept-new ${local.keepalive}" : join(" ", [
+    "-o StrictHostKeyChecking=accept-new",
+    local.keepalive,
+    "-o ProxyCommand=\"${local.proxy_command}\"",
   ])
 
   # Hosts are declared inside their group, the way Kubespray's own sample

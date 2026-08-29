@@ -25,8 +25,16 @@ single_nat_gateway = false
 enable_flow_logs = true
 
 # ─── Access ──────────────────────────────────────────────────────────────────
+# Your public egress IP, as AWS sees it — not a 192.168.x address.
+#   make myip     WORKSPACE=prod   does this line still match?
+#   make myip-set WORKSPACE=prod   rewrite it to your current one
+# A stale entry does not error: the security group drops the packets and SSH
+# hangs. 0.0.0.0/0 is rejected by the security module on purpose.
+#
+# In prod this should be an office range or a VPN egress address, not whatever
+# a laptop happens to have today.
 
-ssh_allowed_cidrs       = ["203.0.113.10/32"]
+ssh_allowed_cidrs       = ["124.248.190.205/32"]
 apiserver_allowed_cidrs = []
 
 ssh_public_key_path  = "~/.ssh/id_ed25519.pub"

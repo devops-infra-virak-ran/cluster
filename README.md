@@ -6,8 +6,17 @@ one environment per workspace.
 ```bash
 make plan       WORKSPACE=dev
 make apply      WORKSPACE=dev
+
+make kubespray-pull   WORKSPACE=dev
+make kubespray-ping   WORKSPACE=dev    # do this before the slow one
+make kubespray-deploy WORKSPACE=dev    # 20-40 minutes
+
 make cluster-up WORKSPACE=dev    # the above, then Kubespray on the nodes
 make destroy    WORKSPACE=dev
+
+make myip WORKSPACE=dev
+
+make myip WORKSPACE=dev && make cluster-up WORKSPACE=dev
 ```
 
 No Helm, no other cloud, and nothing that deploys workloads. This directory
@@ -28,7 +37,7 @@ make plan WORKSPACE=dev
                  └──→ variables: terraform/env/dev.tfvars
 ```
 
-`dev`, `staging` and `prod` are the *same code* with different numbers. There
+`dev`, `staging` and `prod` are the _same code_ with different numbers. There
 is no `environment` variable to set, because `main.tf` derives it:
 
 ```hcl
@@ -93,17 +102,17 @@ calls AWS to see what already exists.
 
 Other things worth knowing:
 
-| Command | What it is for |
-| --- | --- |
-| `make current WORKSPACE=prod` | what is selected, and the values it would use |
-| `make workspaces` | every workspace, which is selected, how much each holds |
-| `make cost WORKSPACE=prod` | the monthly figure, read from that tfvars |
-| `make graph` | dependency graph as an SVG (needs graphviz) |
-| `make refresh WORKSPACE=dev` | re-read reality into state, change nothing |
+| Command                       | What it is for                                          |
+| ----------------------------- | ------------------------------------------------------- |
+| `make current WORKSPACE=prod` | what is selected, and the values it would use           |
+| `make workspaces`             | every workspace, which is selected, how much each holds |
+| `make cost WORKSPACE=prod`    | the monthly figure, read from that tfvars               |
+| `make graph`                  | dependency graph as an SVG (needs graphviz)             |
+| `make refresh WORKSPACE=dev`  | re-read reality into state, change nothing              |
 
 ### plan then apply, exactly
 
-`make apply` re-plans and asks you to confirm. To apply *precisely* what you
+`make apply` re-plans and asks you to confirm. To apply _precisely_ what you
 already reviewed, with no chance of something having changed in between:
 
 ```bash
@@ -119,12 +128,12 @@ This is what CI does. A saved plan cannot drift; a re-plan can.
 
 You just tore down an account over this, so it is worth being blunt:
 
-| | dev | staging | prod |
-| --- | --- | --- | --- |
-| NAT gateways | 1 | 2 | 3 |
-| Control-plane nodes | 1 | 1 | 3 |
-| Workers | 2 | 2 | 3 |
-| **Per month** | **~$35** | **~$70** | **~$285** |
+|                     | dev      | staging  | prod      |
+| ------------------- | -------- | -------- | --------- |
+| NAT gateways        | 1        | 2        | 3         |
+| Control-plane nodes | 1        | 1        | 3         |
+| Workers             | 2        | 2        | 3         |
+| **Per month**       | **~$35** | **~$70** | **~$285** |
 
 **The NAT gateway is the expensive thing, at about $32/month each**, and it
 bills by the hour whether or not a single packet crosses it. Two of the three
@@ -148,8 +157,15 @@ Set your own IP in `terraform/env/dev.tfvars`, or SSH will be open to a
 placeholder range and closed to you:
 
 ```bash
-curl -s ifconfig.me            # then edit ssh_allowed_cidrs
+make myip     WORKSPACE=dev    # does it match? (exits non-zero if not)
+make myip-set WORKSPACE=dev    # write the current one, then: make apply
 ```
+
+Check this whenever SSH or `kubespray-ping` starts hanging. A wrong entry here
+does not produce an error — the security group _drops_ the packets rather than
+refusing them, so the connection hangs and Ansible eventually reports a
+privilege-escalation timeout, which points at `sudo` and says nothing about the
+real cause. Home and mobile addresses move; this is the first thing to check.
 
 `0.0.0.0/0` is rejected by the security module on purpose. You also need an SSH
 key at `~/.ssh/id_ed25519`; if you have none:
@@ -180,7 +196,7 @@ Two things this cluster deliberately does not have — both explained in
 
 - **No cloud controller manager.** Kubernetes dropped the in-tree AWS provider
   in 1.31 and Kubespray v2.31.0 ships no replacement, so `Service
-  type=LoadBalancer` stays Pending. Ingress is the ALB pointed at the NodePort
+type=LoadBalancer` stays Pending. Ingress is the ALB pointed at the NodePort
   range.
 - **No storage until `make storage`.** Kubespray's bundled EBS CSI driver
   points at an image last published in 2021; the upstream release is installed

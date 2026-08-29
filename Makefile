@@ -144,6 +144,37 @@ graph: ## Write a dependency graph to graph.svg (needs graphviz)
 	cd $(TF_DIR) && terraform graph | dot -Tsvg > $(CURDIR)/graph.svg
 	@echo "wrote graph.svg"
 
+.PHONY: myip
+myip: ## Check whether your current public IP is in this workspace's SSH allowlist
+	@test -f "$(TF_DIR)/$(VARS)" || { echo "error: no $(VARS)"; exit 1; }
+	@ip=$$(curl -s --max-time 10 https://checkip.amazonaws.com | tr -d '[:space:]'); \
+	  test -n "$$ip" || { echo "error: could not reach checkip.amazonaws.com — are you online?"; exit 1; }; \
+	  allowed=$$(sed -n 's/^[[:space:]]*ssh_allowed_cidrs[[:space:]]*=[[:space:]]*//p' "$(TF_DIR)/$(VARS)" | head -1); \
+	  printf '  your IP now: %s\n  allowlisted: %s\n\n' "$$ip" "$$allowed"; \
+	  if [[ "$$allowed" == *"$$ip/32"* ]]; then \
+	    echo "  match — SSH to the bastion will work."; \
+	  else \
+	    echo "  NO MATCH. SSH will hang rather than fail: a security group drops"; \
+	    echo "  unmatched packets instead of refusing them, so Ansible waits for its"; \
+	    echo "  full timeout and then blames privilege escalation."; \
+	    echo; \
+	    echo "      make myip-set WORKSPACE=$(WORKSPACE)   # writes it to $(VARS)"; \
+	    echo "      make apply     WORKSPACE=$(WORKSPACE)   # one rule added, one removed"; \
+	    exit 1; \
+	  fi
+
+.PHONY: myip-set
+myip-set: ## Write your current public IP into this workspace's ssh_allowed_cidrs
+	@test -f "$(TF_DIR)/$(VARS)" || { echo "error: no $(VARS)"; exit 1; }
+	@ip=$$(curl -s --max-time 10 https://checkip.amazonaws.com | tr -d '[:space:]'); \
+	  test -n "$$ip" || { echo "error: could not reach checkip.amazonaws.com — are you online?"; exit 1; }; \
+	  line="ssh_allowed_cidrs       = [\"$$ip/32\"]"; \
+	  sed -i "s|^ssh_allowed_cidrs.*|$$line|" "$(TF_DIR)/$(VARS)"; \
+	  grep -n '^ssh_allowed_cidrs' "$(TF_DIR)/$(VARS)" | sed 's/^/  /'; \
+	  echo; \
+	  echo "  Nothing has changed in AWS yet. Apply it:"; \
+	  echo "      make apply WORKSPACE=$(WORKSPACE)"
+
 .PHONY: cost
 cost: ## What this workspace runs to per month, from the notes in its tfvars
 	@grep -E '^\s*#\s*(cost|~\$$)' $(TF_DIR)/$(VARS) | sed 's/^\s*#\s*/  /' || \

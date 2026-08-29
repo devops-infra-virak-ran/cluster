@@ -13,10 +13,19 @@
 #     "import yaml; print(list(yaml.safe_load(open( \
 #      'roles/kubespray_defaults/vars/main/checksums.yml'))['kubelet_checksums']['amd64']))"
 #
+# No "v" prefix. The keys in that checksum map are bare — 1.35.4, not v1.35.4 —
+# and the download URL template adds the v itself:
+#
+#   kubelet_download_url: "{{ dl_k8s_io_url }}/release/v{{ kube_version }}/..."
+#
+# A "v" here fails validate_inventory with "'<' not supported between instances
+# of 'str' and 'int'", because the comparison ends up matching 'v1' against 1.
+# Older Kubespray releases did take the prefixed form.
+#
 # KUBESPRAY_VERSION in the Makefile and this line move together. Nothing warns
 # you when they disagree — the run fails partway, on a machine that is now half
 # configured.
-kube_version: v1.35.4
+kube_version: 1.35.4
 
 # ─── Networking ──────────────────────────────────────────────────────────────
 # Both are Kubespray defaults, restated because the constraint that makes them
