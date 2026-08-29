@@ -247,3 +247,10 @@ aws ec2 describe-images --owners 099720109477 --region us-east-1 \
   --filters 'Name=name,Values=ubuntu/images/hvm-ssd-gp3/ubuntu-noble-24.04-amd64-server-*' \
   --query 'length(Images)'
 ```
+
+```bash
+kubectl get nodes                    # the answer, most of the time
+kubectl get nodes -o wide            # + internal IPs, OS, container runtime
+kubectl get nodes -w                 # live — watch a node flip during scale/upgrade
+kubectl describe node worker1
+```

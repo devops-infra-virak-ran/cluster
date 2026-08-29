@@ -236,8 +236,16 @@ kubespray-shell: ## A prompt inside the Kubespray image, inventory mounted
 	$(KUBESPRAY) shell
 
 .PHONY: kubeconfig
-kubeconfig: ## Write a kubeconfig for this workspace and tunnel to its apiserver
+kubeconfig: ## Write a kubeconfig and hold the tunnel open (Ctrl-C ends it)
 	scripts/kubeconfig.sh $(WORKSPACE)
+
+.PHONY: tunnel
+tunnel: ## Same, but leave the tunnel running in the background
+	scripts/kubeconfig.sh $(WORKSPACE) --background
+
+.PHONY: tunnel-stop
+tunnel-stop: ## Stop a backgrounded tunnel
+	scripts/kubeconfig.sh $(WORKSPACE) --stop
 
 .PHONY: storage
 storage: ## Install the EBS CSI driver and make gp3 the default StorageClass

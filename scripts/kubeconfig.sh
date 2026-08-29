@@ -4,7 +4,7 @@
 # here, and open the tunnel it needs.
 #
 #   scripts/kubeconfig.sh dev [--output ~/.kube/config-dev] [--port 6443]
-#                             [--no-tunnel]
+#                             [--background | --no-tunnel] [--stop]
 #
 # Kubespray writes inventory/<workspace>/artifacts/admin.conf with the control
 # plane's private address, which resolves nowhere outside the VPC. This points
@@ -25,15 +25,39 @@ shift
 OUTPUT="${HOME}/.kube/config-${WORKSPACE}"
 PORT=6443
 TUNNEL=true
+BACKGROUND=false
+STOP=false
+PIDFILE="${ROOT}/kubespray/inventory/${WORKSPACE}/.tunnel.pid"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --output)    OUTPUT="$2"; shift 2 ;;
     --port)      PORT="$2"; shift 2 ;;
-    --no-tunnel) TUNNEL=false; shift ;;
+    --no-tunnel)  TUNNEL=false; shift ;;
+    --background) BACKGROUND=true; shift ;;
+    --stop)       STOP=true; shift ;;
     *) echo "unknown argument: $1" >&2; exit 1 ;;
   esac
 done
+
+# A tunnel started with --background outlives the shell that created it, so
+# there has to be a way to find and stop it again.
+tunnel_pid() {
+  [[ -f "${PIDFILE}" ]] || return 1
+  local pid; pid="$(cat "${PIDFILE}")"
+  kill -0 "${pid}" 2>/dev/null || { rm -f "${PIDFILE}"; return 1; }
+  echo "${pid}"
+}
+
+if [[ "${STOP}" == true ]]; then
+  if pid="$(tunnel_pid)"; then
+    kill "${pid}" && rm -f "${PIDFILE}"
+    echo "==> stopped the tunnel for ${WORKSPACE} (pid ${pid})"
+  else
+    echo "==> no tunnel running for ${WORKSPACE}"
+  fi
+  exit 0
+fi
 
 ADMIN_CONF="${ROOT}/kubespray/inventory/${WORKSPACE}/artifacts/admin.conf"
 if [[ ! -f "${ADMIN_CONF}" ]]; then
@@ -72,6 +96,31 @@ KUBECTL="${ROOT}/kubespray/inventory/${WORKSPACE}/artifacts/kubectl"
 if [[ "${TUNNEL}" != true ]]; then
   echo "==> start the tunnel yourself:"
   echo "    ssh -i ${SSH_KEY} -N -L ${PORT}:${CONTROL_PLANE}:6443 ${SSH_USER}@${BASTION}"
+  exit 0
+fi
+
+if [[ "${BACKGROUND}" == true ]]; then
+  if pid="$(tunnel_pid)"; then
+    echo "==> tunnel already running (pid ${pid}) — nothing to do"
+    exit 0
+  fi
+  # StrictHostKeyChecking=accept-new, because a background process cannot
+  # answer the "authenticity of host" prompt and would simply hang.
+  nohup ssh -i "${SSH_KEY}" -N \
+    -o ExitOnForwardFailure=yes \
+    -o ServerAliveInterval=30 \
+    -o StrictHostKeyChecking=accept-new \
+    -L "${PORT}:${CONTROL_PLANE}:6443" \
+    "${SSH_USER}@${BASTION}" >/dev/null 2>&1 &
+  echo $! > "${PIDFILE}"
+  sleep 2
+  if pid="$(tunnel_pid)"; then
+    echo "==> tunnel ${PORT} → ${CONTROL_PLANE}:6443 via ${BASTION} (pid ${pid}, backgrounded)"
+    echo "    stop it with: make tunnel-stop WORKSPACE=${WORKSPACE}"
+  else
+    echo "error: the tunnel exited immediately — is port ${PORT} already in use?" >&2
+    exit 1
+  fi
   exit 0
 fi
 
