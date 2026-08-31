@@ -42,6 +42,7 @@ EBS_CSI_VERSION   ?= v1.64.0
 # --network host is what lets it reach the apiserver through the SSH tunnel on
 # 127.0.0.1 — without it, "localhost" inside the container is the container.
 HELM_VERSION ?= 3.16.3
+INGRESS_NGINX_VERSION ?= 4.14.5
 HELM_RELEASE ?= apps
 HELM_NS      ?= apps
 CHART        := $(CURDIR)/helm/services
@@ -64,7 +65,6 @@ define need_env_values
 	  echo "       every workspace needs one — copy helm/env/dev.yaml and set"; \
 	  echo "       the tags and replicas $(WORKSPACE) should run."; \
 	  exit 1; }
-	$(need_registry)
 endef
 
 # The registry every image name is prefixed with. Read from Terraform rather
@@ -74,16 +74,50 @@ endef
 #
 # TF_WORKSPACE, not `workspace select`: this must read the state for the
 # workspace being deployed, whichever one happens to be selected right now.
-TF_OUT   = TF_WORKSPACE=$(WORKSPACE) terraform -chdir=$(TF_DIR) output -raw
-REGISTRY = --set global.imageRegistry="$$($(TF_OUT) ecr_image_prefix)"
+TF_OUT := TF_WORKSPACE=$(WORKSPACE) terraform -chdir=$(TF_DIR) output -raw
 
-# Without this the output resolves to an empty string, helm renders
-# `auth-api:0.1.0`, and every pod sits in ImagePullBackOff pulling a name that
-# only means something on Docker Hub. Failing here says why.
+# There is no registry until `make apply`, and most of the time an environment
+# is destroyed — that is the point of destroying it. Rendering and linting the
+# chart has nothing to do with AWS, so they fall back to a placeholder rather
+# than refusing to run.
+#
+# A .invalid host (RFC 2606) can never resolve, so a rendered manifest that
+# escaped into a cluster fails immediately and visibly instead of quietly
+# pulling some unrelated image from Docker Hub.
+REGISTRY_PLACEHOLDER := unresolved-registry.invalid
+INGRESS_PLACEHOLDER  := http://unresolved-loadbalancer.invalid
+
+# Both facts Helm needs from AWS, resolved in the shell at recipe time so make
+# does not run Terraform just to parse this file.
+REGISTRY  = --set global.imageRegistry="$$(r="$$($(TF_OUT) ecr_image_prefix 2>/dev/null)"; echo "$${r:-$(REGISTRY_PLACEHOLDER)}")"
+INGRESS   = --set global.ingress.url="$$(r="$$($(TF_OUT) alb_url 2>/dev/null)"; echo "$${r:-$(INGRESS_PLACEHOLDER)}")"
+HELM_SETS = $(REGISTRY) $(INGRESS)
+
+# For helm-lint and helm-render: say the values are not the real ones, on
+# stderr, so `make helm-render > manifest.yaml` still produces clean YAML.
+define warn_offline
+	@r="$$($(TF_OUT) ecr_image_prefix 2>/dev/null)$$($(TF_OUT) alb_url 2>/dev/null)"; test -n "$$r" || { \
+	  echo "note: workspace '$(WORKSPACE)' is not applied — images render as" >&2; \
+	  echo "      $(REGISTRY_PLACEHOLDER)/<service>:<tag> and the URL as" >&2; \
+	  echo "      $(INGRESS_PLACEHOLDER). Fine for lint and render; run" >&2; \
+	  echo "      'make apply WORKSPACE=$(WORKSPACE)' for the real ones." >&2; }
+endef
+
+# For `make url` and `make ingress`, which need the load balancer specifically.
+define need_alb
+	@r="$$($(TF_OUT) alb_url 2>/dev/null)"; test -n "$$r" || { \
+	  echo "error: workspace '$(WORKSPACE)' has no load balancer yet."; \
+	  echo "       Terraform creates it, and the outputs naming it:"; \
+	  echo "         make apply WORKSPACE=$(WORKSPACE)"; \
+	  exit 1; }
+endef
+
+# For helm-diff and helm-deploy, which touch a cluster. Deploying the
+# placeholder would leave every pod in ImagePullBackOff, so this refuses.
 define need_registry
 	@r="$$($(TF_OUT) ecr_image_prefix 2>/dev/null)"; test -n "$$r" || { \
-	  echo "error: workspace '$(WORKSPACE)' has no ECR registry yet."; \
-	  echo "       Terraform creates the repositories, and the output naming them:"; \
+	  echo "error: workspace '$(WORKSPACE)' has no ECR registry yet, so there are"; \
+	  echo "       no images to deploy. Terraform creates the repositories:"; \
 	  echo "         make apply WORKSPACE=$(WORKSPACE)"; \
 	  exit 1; }
 endef
@@ -244,12 +278,46 @@ cost: ## What this workspace runs to per month, from the notes in its tfvars
 # target here carries WORKSPACE through to a per-workspace inventory, so
 # `make kubespray-deploy WORKSPACE=prod` cannot reach dev's nodes.
 
-.PHONY: cluster-up
-cluster-up: apply kubespray-pull kubespray-ping kubespray-deploy ## Infrastructure, then Kubernetes on it (30-50 minutes)
+# The whole thing, in order, from nothing to a URL that answers.
+#
+# Ordering that is not obvious:
+#
+#   tunnel, not kubeconfig   kubeconfig holds the tunnel in the foreground and
+#                            waits for Ctrl-C, which would stop the chain dead.
+#   ecr-auth before deploy   the pull secret has to exist when the first pod is
+#                            scheduled, or it lands in ImagePullBackOff and
+#                            helm-deploy --wait sits there until it times out.
+#   ingress before deploy    not required, but the ALB's targets only go
+#                            healthy once something answers on the NodePort,
+#                            so doing it first means `url` works immediately.
+.PHONY: up
+up: ## Everything: infrastructure, Kubernetes, ingress, services, URL (35-55 min)
+	@echo "Building $(WORKSPACE) from nothing. This takes 35-55 minutes."
+	@$(MAKE) --no-print-directory myip WORKSPACE=$(WORKSPACE)
+	@$(MAKE) --no-print-directory apply WORKSPACE=$(WORKSPACE)
+	@$(MAKE) --no-print-directory kubespray-pull WORKSPACE=$(WORKSPACE)
+	@$(MAKE) --no-print-directory kubespray-ping WORKSPACE=$(WORKSPACE)
+	@$(MAKE) --no-print-directory kubespray-deploy WORKSPACE=$(WORKSPACE)
+	@$(MAKE) --no-print-directory tunnel WORKSPACE=$(WORKSPACE)
+	@$(MAKE) --no-print-directory storage WORKSPACE=$(WORKSPACE)
+	@$(MAKE) --no-print-directory ingress WORKSPACE=$(WORKSPACE)
+	@$(MAKE) --no-print-directory ecr-auth WORKSPACE=$(WORKSPACE)
+	@$(MAKE) --no-print-directory helm-deploy WORKSPACE=$(WORKSPACE)
 	@echo
-	@echo "Cluster is up. Next:"
-	@echo "    make kubeconfig WORKSPACE=$(WORKSPACE)   # kubectl access, through the bastion"
-	@echo "    make storage    WORKSPACE=$(WORKSPACE)   # EBS CSI driver + default StorageClass"
+	@$(MAKE) --no-print-directory url WORKSPACE=$(WORKSPACE)
+
+.PHONY: cluster-up
+cluster-up: apply kubespray-pull kubespray-ping kubespray-deploy ## Infrastructure and Kubernetes only — `up` also deploys the services
+	@echo
+	@echo "Cluster is up — but nothing is running on it yet. Next:"
+	@echo "    make kubeconfig  WORKSPACE=$(WORKSPACE)   # kubectl access, through the bastion"
+	@echo "    make storage     WORKSPACE=$(WORKSPACE)   # EBS CSI driver + default StorageClass"
+	@echo "    make ingress     WORKSPACE=$(WORKSPACE)   # the controller the ALB forwards to"
+	@echo "    make helm-deploy WORKSPACE=$(WORKSPACE)   # the services"
+	@echo "    make url         WORKSPACE=$(WORKSPACE)   # where they answer"
+	@echo
+	@echo "  helm-deploy will land in ImagePullBackOff until ECR auth exists —"
+	@echo "  see global.imagePullSecrets in helm/services/values.yaml."
 
 .PHONY: inventory
 inventory: ## Rewrite this workspace's Kubespray inventory from live state
@@ -321,6 +389,15 @@ cluster-down: ## Delete what Kubernetes created in AWS — run this BEFORE destr
 	@echo "Wait for the volumes to disappear, then: make destroy WORKSPACE=$(WORKSPACE)"
 
 # ─── Services ────────────────────────────────────────────────────────────────
+# Getting from nothing to a URL:
+#
+#   make apply        the cluster, the ECR repositories and the ALB
+#   make kubespray-deploy   Kubernetes on the nodes
+#   make kubeconfig         a kubectl that can reach it
+#   make ingress            the controller the ALB forwards to
+#   make helm-deploy        the services
+#   make url                where they answer
+#
 # One Helm release holds every service, and Helm owns the whole definition:
 #
 #   helm/values/<group>/services.yaml   which services exist, in every env
@@ -348,30 +425,84 @@ svc-rm: ## Remove a service: make svc-rm NAME=payments-api
 	@test -n "$(NAME)" || { echo "usage: make svc-rm NAME=<service>"; exit 1; }
 	@scripts/service.sh rm "$(NAME)"
 
+.PHONY: ingress
+ingress: ## Install the ingress controller the ALB forwards to
+	$(need_alb)
+	@# Pinned to the NodePort Terraform built the target group around. If these
+	@# two numbers ever disagree the ALB health check fails on every target and
+	@# the URL returns 503 with nothing obviously wrong in the cluster.
+	@#
+	@# publishService is off because there is no cloud controller manager to
+	@# populate a LoadBalancer Service; publish-status-address puts the ALB's
+	@# name into every Ingress instead, so `kubectl get ingress` shows the
+	@# address that actually serves it.
+	$(HELM) upgrade --install ingress-nginx ingress-nginx \
+	  --repo https://kubernetes.github.io/ingress-nginx \
+	  --version $(INGRESS_NGINX_VERSION) \
+	  --namespace ingress-nginx --create-namespace \
+	  --set controller.service.type=NodePort \
+	  --set controller.service.nodePorts.http="$$($(TF_OUT) ingress_nodeport)" \
+	  --set controller.publishService.enabled=false \
+	  --set controller.extraArgs.publish-status-address="$$($(TF_OUT) alb_dns_name)" \
+	  --wait --timeout 5m
+	@echo
+	@echo "Targets take about 30s to pass their first health check."
+	@echo "Then: make url WORKSPACE=$(WORKSPACE)"
+
+.PHONY: ecr-auth
+ecr-auth: ## Give the cluster a pull secret for ECR, and a CronJob to refresh it
+	@scripts/ecr-auth.sh $(WORKSPACE) $(HELM_NS)
+
+.PHONY: url
+url: ## The public URL, and the route each service answers on
+	$(need_env_values)
+	$(need_alb)
+	@base="$$($(TF_OUT) alb_url)"; echo "$$base"; echo; \
+	  $(HELM) template $(HELM_RELEASE) /work/helm/services \
+	    --namespace $(HELM_NS) $(VALUE_ARGS) $(HELM_SETS) 2>/dev/null \
+	  | python3 -c "\
+import sys, yaml, re; \
+base = sys.argv[1]; \
+clean = lambda p: re.sub(r'\(/\|\\\$$\)\(\.\*\)\$$', '', p); \
+rows = [(i['metadata']['labels']['app.kubernetes.io/name'], clean(p['path'])) \
+        for i in yaml.safe_load_all(sys.stdin) if i and i.get('kind') == 'Ingress' \
+        for r in i['spec']['rules'] for p in r['http']['paths']]; \
+print('\n'.join('  %-16s %s%s' % (n, base, p) for n, p in sorted(rows)) \
+      or '  no service declares a route')" "$$base"
+	@echo
+	@echo "A 503 for the first half-minute is the ALB waiting on health checks."
+	@echo "If it persists, the targets never went healthy — check the NodePort matches:"
+	@echo "  kubectl -n ingress-nginx get svc ingress-nginx-controller -o wide"
+	@echo "  make output WORKSPACE=$(WORKSPACE) | grep ingress_nodeport"
+
 .PHONY: helm-lint
 helm-lint: ## Check the chart renders and follows Helm conventions
 	$(need_env_values)
-	$(HELM) lint /work/helm/services $(VALUE_ARGS) $(REGISTRY)
+	$(warn_offline)
+	$(HELM) lint /work/helm/services $(VALUE_ARGS) $(HELM_SETS)
 
 .PHONY: helm-render
 helm-render: ## Print the Kubernetes YAML this release would apply
 	$(need_env_values)
+	$(warn_offline)
 	@# Silent on purpose: the output is meant to be piped into kubectl or a
 	@# file, and make echoing the docker command would corrupt the YAML.
 	@$(HELM) template $(HELM_RELEASE) /work/helm/services \
-	  --namespace $(HELM_NS) $(VALUE_ARGS) $(REGISTRY)
+	  --namespace $(HELM_NS) $(VALUE_ARGS) $(HELM_SETS)
 
 .PHONY: helm-diff
 helm-diff: ## Ask the live apiserver what would change, without changing it
 	$(need_env_values)
+	$(need_registry)
 	$(HELM) template $(HELM_RELEASE) /work/helm/services \
-	  --namespace $(HELM_NS) $(VALUE_ARGS) $(REGISTRY) | kubectl diff -f - || true
+	  --namespace $(HELM_NS) $(VALUE_ARGS) $(HELM_SETS) | kubectl diff -f - || true
 
 .PHONY: helm-deploy
 helm-deploy: ## Apply the release — creates, updates and removes to match the files
 	$(need_env_values)
+	$(need_registry)
 	$(HELM) upgrade --install $(HELM_RELEASE) /work/helm/services \
-	  --namespace $(HELM_NS) --create-namespace $(VALUE_ARGS) $(REGISTRY) \
+	  --namespace $(HELM_NS) --create-namespace $(VALUE_ARGS) $(HELM_SETS) \
 	  --wait --timeout 5m
 
 .PHONY: helm-status

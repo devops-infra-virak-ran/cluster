@@ -11,8 +11,9 @@ metrics_server_enabled: true
 #   ingress controller  — Kubespray no longer ships an nginx ingress role, and
 #                         Service type=LoadBalancer cannot work without a cloud
 #                         controller manager (see group_vars/all/aws.yml).
-#                         Ingress is the ALB Terraform points at the NodePort
-#                         range.
+#                         `make ingress` installs ingress-nginx as a NodePort
+#                         Service, pinned to the port Terraform's ALB target
+#                         group already polls.
 #   EBS CSI driver      — `make storage`, from upstream. Kubespray's copy is
 #                         pinned to an abandoned image.
 #   cert-manager, Helm  — nothing in this directory deploys workloads yet.

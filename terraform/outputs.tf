@@ -49,6 +49,23 @@ output "private_subnet_ids" {
   value       = module.network.private_subnet_ids
 }
 
+# ─── Load balancer ───────────────────────────────────────────────────────────
+
+output "alb_url" {
+  description = "Base URL of the public load balancer — what every route hangs off"
+  value       = module.loadbalancer.url
+}
+
+output "alb_dns_name" {
+  description = "The load balancer's hostname, for a CNAME or ALIAS record"
+  value       = module.loadbalancer.dns_name
+}
+
+output "ingress_nodeport" {
+  description = "NodePort the ALB polls — `make ingress` pins the controller to it"
+  value       = module.loadbalancer.ingress_nodeport
+}
+
 # ─── Registry ────────────────────────────────────────────────────────────────
 
 output "ecr_registry_url" {

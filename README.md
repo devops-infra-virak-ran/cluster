@@ -17,6 +17,13 @@ make destroy    WORKSPACE=dev
 make myip WORKSPACE=dev
 
 make myip WORKSPACE=dev && make cluster-up WORKSPACE=dev
+
+make kubeconfig  WORKSPACE=dev   # required — nothing below works without it
+make storage     WORKSPACE=dev   # only if you need PVCs
+make ingress     WORKSPACE=dev   # the controller the ALB forwards to
+make helm-deploy WORKSPACE=dev   # ← will fail, see below
+make url         WORKSPACE=dev
+
 ```
 
 No Helm, no other cloud, and nothing that deploys workloads. This directory

@@ -1,12 +1,23 @@
-{{ .Chart.Name }} {{ .Chart.Version }} — release {{ .Release.Name }} in namespace {{ .Release.Namespace }}
 {{- $all := include "services.all" $ | fromYaml }}
+{{- $base := .Values.global.ingress.url | trimSuffix "/" }}
+{{ .Chart.Name }} {{ .Chart.Version }} — release {{ .Release.Name }} in namespace {{ .Release.Namespace }}
+
+{{ if $base }}{{ $base }}{{ else }}No public URL. The Makefile passes it from Terraform's alb_url output:
+  make apply WORKSPACE=<env>   creates the load balancer
+  make url   WORKSPACE=<env>{{ end }}
 {{- range $group, $g := .Values.groups }}
 
 {{ $group }}:
 {{- range $name, $cfg := ($g.services | default dict) }}
 {{- $svc := index $all $name }}
 {{- if $svc.enabled }}
-  {{ printf "%-16s" $name }} {{ include "services.image" (dict "root" $ "name" $name "svc" $svc) }}  x{{ $svc.replicas }}{{ if $svc.route }}  →  {{ $svc.route }}{{ else }}  (internal only){{ end }}
+{{- $ctx := dict "root" $ "name" $name "svc" $svc }}
+  {{ printf "%-16s" $name }} {{ include "services.image" $ctx }}  x{{ $svc.replicas }}
+{{- if $svc.route }}
+  {{ printf "%-16s" "" }} → {{ $base }}{{ $svc.route }}
+{{- else }}
+  {{ printf "%-16s" "" }} → internal only, at http://{{ $name }}:{{ $svc.service.port }}
+{{- end }}
 {{- else }}
   {{ printf "%-16s" $name }} disabled
 {{- end }}
@@ -14,8 +25,12 @@
 {{- end }}
 
 Check them:
+  make url         WORKSPACE=<env>    the routes above, from Terraform
+  make helm-status WORKSPACE=<env>    what is actually running
   kubectl -n {{ .Release.Namespace }} get deploy,svc,ingress -l app.kubernetes.io/instance={{ .Release.Name }}
-  kubectl -n {{ .Release.Namespace }} get deploy -l app.kubernetes.io/component=api
 
-Add a service:     add an entry under the right group in values.yaml, then helm upgrade
-Remove a service:  delete its entry, then helm upgrade — Helm deletes what is no longer rendered
+A route that 503s is usually the ALB, not the pod — its targets poll the
+ingress controller's NodePort, and `make ingress` is what puts one there.
+
+Add a service:     make svc-add NAME=<name> GROUP=<group> TAG=<version>
+Remove a service:  make svc-rm  NAME=<name>

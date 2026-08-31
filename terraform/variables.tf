@@ -91,6 +91,18 @@ variable "node_ssh_user" {
   default     = "ubuntu"
 }
 
+# ─── Ingress ─────────────────────────────────────────────────────────────────
+
+variable "ingress_nodeport" {
+  type        = number
+  description = <<-DESC
+    NodePort the ALB forwards to, and the port `make ingress` pins the ingress
+    controller to. One number, used in two places that must agree — change it
+    here and re-run both.
+  DESC
+  default     = 30080
+}
+
 # ─── Cluster nodes ───────────────────────────────────────────────────────────
 
 variable "control_plane_count" {

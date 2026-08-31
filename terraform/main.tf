@@ -138,6 +138,39 @@ module "compute" {
   tags = var.tags
 }
 
+# ─── Load balancer ───────────────────────────────────────────────────────────
+# The public front door, and the only thing in this configuration with an
+# address a browser can reach:
+#
+#   internet → ALB :80 → worker NodePort → ingress-nginx → Service → pod
+#
+# The security group for it was already here, wired to nothing. This is what it
+# was waiting for.
+#
+# Kubernetes cannot create this itself — no cloud controller manager, so a
+# Service of type LoadBalancer stays Pending. The ingress controller is
+# installed separately and pinned to the NodePort below:
+#
+#   make apply    WORKSPACE=dev   → the ALB, pointing at the NodePort
+#   make ingress  WORKSPACE=dev   → the controller, listening on it
+#   make url      WORKSPACE=dev   → the address
+
+module "loadbalancer" {
+  source = "./modules/loadbalancer"
+
+  project_name = var.project_name
+  environment  = local.environment
+
+  vpc_id            = module.network.vpc_id
+  public_subnet_ids = module.network.public_subnet_ids
+  security_group_id = module.security.alb_security_group_id
+
+  target_instance_ids = module.compute.worker_instance_ids
+  ingress_nodeport    = var.ingress_nodeport
+
+  tags = var.tags
+}
+
 # ─── Registry ────────────────────────────────────────────────────────────────
 # One ECR repository per service in the Helm catalogue.
 #

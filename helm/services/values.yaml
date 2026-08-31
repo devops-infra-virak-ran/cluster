@@ -98,19 +98,37 @@ global:
   # `auth-api:0.1.0` and the Makefile does not. Use `make helm-render`.
   imageRegistry: ""
 
-  # NOTE: nothing in this repository creates `regcred`. Pulls work anyway on
-  # EC2 nodes, because the node role carries the ECR pull permission the
-  # registry module grants it and the kubelet's credential provider uses it —
-  # a missing pull secret is a warning, not a failure. Delete this entry, or
-  # create the Secret, before running the chart anywhere that is not AWS.
+  # ECR needs one of these, and nothing in this repository creates it yet.
+  #
+  # The node role already has ecr:GetAuthorizationToken and the pull actions,
+  # but IAM permission is not a registry login. The kubelet has to exchange one
+  # for the other, and it no longer knows how on its own: the in-tree ECR
+  # credential provider was removed, replaced by an ecr-credential-provider
+  # binary the kubelet execs via --image-credential-provider-config. Kubespray
+  # v2.31.0 configures neither — there is no credential_provider variable in
+  # the release at all.
+  #
+  # So without either that plugin on the nodes or a real `regcred` Secret here,
+  # every pull is 401 Unauthorized and every pod lands in ImagePullBackOff.
+  # An ECR token also expires after 12 hours, which is why the Secret route
+  # needs something refreshing it rather than one kubectl command.
   imagePullSecrets:
     - name: regcred
 
   ingress:
     enabled: true
     className: nginx
-    # host: apps.example.com   # unset = match any host, which is what the
-    #                            ALB's DNS name needs until you own a domain
+
+    # host restricts an Ingress rule to one Host header. Unset = match any,
+    # which is what the ALB's DNS name needs until you own a domain — and what
+    # keeps it working behind anything that rewrites Host, like CloudFront.
+    # host: apps.example.com
+
+    # Display only: never rendered into a manifest, only into NOTES.txt and
+    # `make url`. Passed by the Makefile from Terraform's alb_url output, for
+    # the same reason imageRegistry is — it is a fact about the environment
+    # you applied, not a choice anyone makes in Helm.
+    url: ""
 
 # ─── Groups ──────────────────────────────────────────────────────────────────
 # Filled in from ../values/<group>/*.yaml, then ../env/<workspace>.yaml. Empty
