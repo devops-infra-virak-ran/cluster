@@ -83,12 +83,28 @@ defaults:
 # ─── Cluster-wide settings ───────────────────────────────────────────────────
 
 global:
-  # Prefixed to every image.repository that is not already fully qualified,
-  # so the registry is named once rather than in every entry.
+  # Prefixed to every image.repository that is not already fully qualified, so
+  # the registry is named once rather than in every entry.
+  #
+  # Empty here, and not set in any values file: the Makefile passes it from
+  # Terraform, which is the only thing that knows the account and region the
+  # repositories were actually created in.
+  #
+  #   make helm-deploy WORKSPACE=dev
+  #     --set global.imageRegistry=$(terraform output -raw ecr_image_prefix)
+  #     → <account>.dkr.ecr.<region>.amazonaws.com/<project>
+  #
+  # Which is why `helm template helm/services -f ...` run by hand renders
+  # `auth-api:0.1.0` and the Makefile does not. Use `make helm-render`.
   imageRegistry: ""
 
+  # NOTE: nothing in this repository creates `regcred`. Pulls work anyway on
+  # EC2 nodes, because the node role carries the ECR pull permission the
+  # registry module grants it and the kubelet's credential provider uses it —
+  # a missing pull secret is a warning, not a failure. Delete this entry, or
+  # create the Secret, before running the chart anywhere that is not AWS.
   imagePullSecrets:
-    - name: regcred          # refreshed by the ECR credentials CronJob
+    - name: regcred
 
   ingress:
     enabled: true

@@ -56,6 +56,20 @@ output "ecr_registry_url" {
   value       = module.registry.registry_url
 }
 
+output "ecr_image_prefix" {
+  description = "What every image name is prefixed with — registry host plus the repository prefix"
+
+  # This is the value Helm needs, not ecr_registry_url. Repositories are named
+  # <project>/<service>, so the host alone would resolve to a repository that
+  # does not exist and every pod would sit in ImagePullBackOff.
+  #
+  #   make helm-deploy passes it as global.imageRegistry
+  #
+  # Null before the first apply, because there are no repositories yet to read
+  # the account and region back from.
+  value = module.registry.registry_url == null ? null : "${module.registry.registry_url}/${var.project_name}"
+}
+
 output "services" {
   description = "Service names that got an ECR repository"
   value       = local.service_names

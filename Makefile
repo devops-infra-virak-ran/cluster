@@ -64,6 +64,28 @@ define need_env_values
 	  echo "       every workspace needs one — copy helm/env/dev.yaml and set"; \
 	  echo "       the tags and replicas $(WORKSPACE) should run."; \
 	  exit 1; }
+	$(need_registry)
+endef
+
+# The registry every image name is prefixed with. Read from Terraform rather
+# than written into a values file: it contains the account id and region, which
+# are properties of the environment you actually applied into, not a choice
+# anyone makes in Helm. Nothing to keep in sync and no account id in git.
+#
+# TF_WORKSPACE, not `workspace select`: this must read the state for the
+# workspace being deployed, whichever one happens to be selected right now.
+TF_OUT   = TF_WORKSPACE=$(WORKSPACE) terraform -chdir=$(TF_DIR) output -raw
+REGISTRY = --set global.imageRegistry="$$($(TF_OUT) ecr_image_prefix)"
+
+# Without this the output resolves to an empty string, helm renders
+# `auth-api:0.1.0`, and every pod sits in ImagePullBackOff pulling a name that
+# only means something on Docker Hub. Failing here says why.
+define need_registry
+	@r="$$($(TF_OUT) ecr_image_prefix 2>/dev/null)"; test -n "$$r" || { \
+	  echo "error: workspace '$(WORKSPACE)' has no ECR registry yet."; \
+	  echo "       Terraform creates the repositories, and the output naming them:"; \
+	  echo "         make apply WORKSPACE=$(WORKSPACE)"; \
+	  exit 1; }
 endef
 
 HELM = docker run --rm --network host \
@@ -329,7 +351,7 @@ svc-rm: ## Remove a service: make svc-rm NAME=payments-api
 .PHONY: helm-lint
 helm-lint: ## Check the chart renders and follows Helm conventions
 	$(need_env_values)
-	$(HELM) lint /work/helm/services $(VALUE_ARGS)
+	$(HELM) lint /work/helm/services $(VALUE_ARGS) $(REGISTRY)
 
 .PHONY: helm-render
 helm-render: ## Print the Kubernetes YAML this release would apply
@@ -337,19 +359,19 @@ helm-render: ## Print the Kubernetes YAML this release would apply
 	@# Silent on purpose: the output is meant to be piped into kubectl or a
 	@# file, and make echoing the docker command would corrupt the YAML.
 	@$(HELM) template $(HELM_RELEASE) /work/helm/services \
-	  --namespace $(HELM_NS) $(VALUE_ARGS)
+	  --namespace $(HELM_NS) $(VALUE_ARGS) $(REGISTRY)
 
 .PHONY: helm-diff
 helm-diff: ## Ask the live apiserver what would change, without changing it
 	$(need_env_values)
 	$(HELM) template $(HELM_RELEASE) /work/helm/services \
-	  --namespace $(HELM_NS) $(VALUE_ARGS) | kubectl diff -f - || true
+	  --namespace $(HELM_NS) $(VALUE_ARGS) $(REGISTRY) | kubectl diff -f - || true
 
 .PHONY: helm-deploy
 helm-deploy: ## Apply the release — creates, updates and removes to match the files
 	$(need_env_values)
 	$(HELM) upgrade --install $(HELM_RELEASE) /work/helm/services \
-	  --namespace $(HELM_NS) --create-namespace $(VALUE_ARGS) \
+	  --namespace $(HELM_NS) --create-namespace $(VALUE_ARGS) $(REGISTRY) \
 	  --wait --timeout 5m
 
 .PHONY: helm-status
