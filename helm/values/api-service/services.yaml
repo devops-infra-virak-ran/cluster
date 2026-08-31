@@ -1,0 +1,59 @@
+# ─── api-service ─────────────────────────────────────────────────────────────
+# Backend services. Every API in this file inherits `defaults` below, which in
+# turn inherits the chart's own defaults in helm/services/values.yaml.
+#
+#   add a service     append a block under `services:`  (make svc-add)
+#   remove a service  delete its block                  (make svc-rm)
+#   disable one       enabled: false — keeps the config, removes the objects
+#
+# A service only states what makes it different. Everything unstated comes
+# from the two tiers above it.
+#
+# This file is the catalogue: it says which APIs exist and what is true about
+# them in every environment. Terraform reads the service names out of it to
+# create their ECR repositories, so a service added here gets a registry on the
+# next `make apply`.
+#
+# What differs per environment — image tags and replica counts — is NOT here.
+# It lives in helm/env/<workspace>.yaml, which merges on top of this file.
+
+groups:
+  api-service:
+
+    # ─── Defaults for every API ──────────────────────────────────────────────
+    defaults:
+      # With a routePrefix set, a service that does not name a route gets
+      # <routePrefix>/<its own name>. That plus image.repository defaulting to
+      # the service name is why an entry can be a single line.
+      routePrefix: /api
+
+      # APIs are mounted under a path prefix and serve from their own root, so
+      # the prefix is stripped before the request reaches the app.
+      rewrite: /
+      probes:
+        path: /health
+        readyPath: /health/ready
+
+    # ─── The services ────────────────────────────────────────────────────────
+    services:
+
+      # Issues and validates tokens. Everything is convention: the image is
+      # auth-api and the route is /api/auth, both from the name. Its tag and
+      # replica count come from helm/env/<workspace>.yaml.
+      auth-api:
+        env:
+          CORS_ORIGIN: "*"
+
+      # The application API. Calls auth-api over cluster DNS.
+      core-api:
+        # Busier than the others in every environment, so the bump belongs
+        # here rather than repeated in each env file. Everything not named
+        # still comes from the tiers above — cpu stays 100m, the memory limit
+        # stays 512Mi.
+        resources:
+          requests:
+            memory: 384Mi
+
+        env:
+          # The Service name, not the ALB: this call never leaves the cluster.
+          AUTH_URL: http://auth-api:80

@@ -113,15 +113,28 @@ if [[ "${BACKGROUND}" == true ]]; then
     -L "${PORT}:${CONTROL_PLANE}:6443" \
     "${SSH_USER}@${BASTION}" >/dev/null 2>&1 &
   echo $! > "${PIDFILE}"
-  sleep 2
-  if pid="$(tunnel_pid)"; then
-    echo "==> tunnel ${PORT} → ${CONTROL_PLANE}:6443 via ${BASTION} (pid ${pid}, backgrounded)"
-    echo "    stop it with: make tunnel-stop WORKSPACE=${WORKSPACE}"
-  else
-    echo "error: the tunnel exited immediately — is port ${PORT} already in use?" >&2
-    exit 1
-  fi
-  exit 0
+
+  # Wait for the port to actually accept a connection, not merely for the ssh
+  # process to still exist. An ssh that cannot reach the bastion stays alive
+  # and retrying, so a liveness check on the pid reports a working tunnel
+  # while every kubectl gets "connection refused".
+  for _ in $(seq 20); do
+    if (exec 3<>"/dev/tcp/127.0.0.1/${PORT}") 2>/dev/null; then
+      exec 3<&- 3>&-
+      pid="$(tunnel_pid)" || true
+      echo "==> tunnel ${PORT} → ${CONTROL_PLANE}:6443 via ${BASTION} (pid ${pid}, backgrounded)"
+      echo "    stop it with: make tunnel-stop WORKSPACE=${WORKSPACE}"
+      exit 0
+    fi
+    tunnel_pid >/dev/null || { echo "error: the tunnel exited immediately — is port ${PORT} already in use?" >&2; exit 1; }
+    sleep 0.5
+  done
+
+  kill "$(cat "${PIDFILE}")" 2>/dev/null || true
+  rm -f "${PIDFILE}"
+  echo "error: port ${PORT} never came up — the bastion at ${BASTION} is not answering." >&2
+  echo "       Check the SSH allowlist first:  make myip WORKSPACE=${WORKSPACE}" >&2
+  exit 1
 fi
 
 echo "==> tunnel ${PORT} → ${CONTROL_PLANE}:6443 via ${BASTION} — Ctrl-C closes it"

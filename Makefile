@@ -35,6 +35,42 @@ INVENTORY         := $(CURDIR)/kubespray/inventory/$(WORKSPACE)/inventory.ini
 # all/aws.yml for why.
 EBS_CSI_VERSION   ?= v1.64.0
 
+# ─── Helm ────────────────────────────────────────────────────────────────────
+# Helm runs from a container for the same reason Kubespray does: the version is
+# pinned by a tag, and nothing has to be installed on the host.
+#
+# --network host is what lets it reach the apiserver through the SSH tunnel on
+# 127.0.0.1 — without it, "localhost" inside the container is the container.
+HELM_VERSION ?= 3.16.3
+HELM_RELEASE ?= apps
+HELM_NS      ?= apps
+CHART        := $(CURDIR)/helm/services
+
+# The catalogue. Every file under helm/values/<group>/ becomes a -f, sorted so
+# the order is reproducible. One file per group today; the glob means a group
+# can be split across several files, or a new group added, with no change here.
+VALUE_FILES := $(sort $(wildcard $(CURDIR)/helm/values/*/*.yaml))
+
+# What differs about this environment: image tags and replica counts. It goes
+# LAST so it wins — the catalogue says a service exists, this says which build
+# of it runs here and how many.
+ENV_VALUES  := $(CURDIR)/helm/env/$(WORKSPACE).yaml
+VALUE_ARGS  := $(foreach f,$(VALUE_FILES),-f /work/helm/values/$(notdir $(patsubst %/,%,$(dir $(f))))/$(notdir $(f))) \
+               -f /work/helm/env/$(WORKSPACE).yaml
+
+define need_env_values
+	@test -f "$(ENV_VALUES)" || { \
+	  echo "error: no $(ENV_VALUES)"; \
+	  echo "       every workspace needs one — copy helm/env/dev.yaml and set"; \
+	  echo "       the tags and replicas $(WORKSPACE) should run."; \
+	  exit 1; }
+endef
+
+HELM = docker run --rm --network host \
+         -v "$(CURDIR):/work" -v "$(HOME)/.kube:/root/.kube:ro" \
+         -e KUBECONFIG=/root/.kube/config-$(WORKSPACE) \
+         -w /work alpine/helm:$(HELM_VERSION)
+
 # Every workspace-aware target starts here. `-or-create` means the first
 # `make plan WORKSPACE=staging` just works instead of failing on a workspace
 # that does not exist yet.
@@ -261,6 +297,72 @@ cluster-down: ## Delete what Kubernetes created in AWS — run this BEFORE destr
 	kubectl delete svc --all-namespaces --field-selector spec.type=LoadBalancer --ignore-not-found
 	kubectl delete pvc --all-namespaces --all --ignore-not-found
 	@echo "Wait for the volumes to disappear, then: make destroy WORKSPACE=$(WORKSPACE)"
+
+# ─── Services ────────────────────────────────────────────────────────────────
+# One Helm release holds every service, and Helm owns the whole definition:
+#
+#   helm/values/<group>/services.yaml   which services exist, in every env
+#   helm/env/<workspace>.yaml           image tag and replicas, per env
+#
+# Add a block to add a service, delete one to remove it, and `helm upgrade`
+# reconciles the difference. Terraform reads the service names out of the
+# first to create their ECR repositories, so a new service also needs a
+# `make apply` before its images have anywhere to go.
+
+.PHONY: services
+services: ## List the catalogue for this workspace, and which files override it
+	@scripts/service.sh list $(WORKSPACE)
+
+.PHONY: svc-add
+svc-add: ## Add a service: make svc-add NAME=payments-api GROUP=api-service TAG=0.1.0
+	@test -n "$(NAME)" -a -n "$(GROUP)" -a -n "$(TAG)" || { \
+	  echo "usage: make svc-add NAME=<service> GROUP=<group> TAG=<version> [ROUTE=/x] [REPO=x] [REPLICAS=n]"; exit 1; }
+	@scripts/service.sh add "$(NAME)" "$(GROUP)" \
+	  $(if $(TAG),--tag $(TAG)) $(if $(ROUTE),--route $(ROUTE)) \
+	  $(if $(REPO),--repo $(REPO)) $(if $(REPLICAS),--replicas $(REPLICAS))
+
+.PHONY: svc-rm
+svc-rm: ## Remove a service: make svc-rm NAME=payments-api
+	@test -n "$(NAME)" || { echo "usage: make svc-rm NAME=<service>"; exit 1; }
+	@scripts/service.sh rm "$(NAME)"
+
+.PHONY: helm-lint
+helm-lint: ## Check the chart renders and follows Helm conventions
+	$(need_env_values)
+	$(HELM) lint /work/helm/services $(VALUE_ARGS)
+
+.PHONY: helm-render
+helm-render: ## Print the Kubernetes YAML this release would apply
+	$(need_env_values)
+	@# Silent on purpose: the output is meant to be piped into kubectl or a
+	@# file, and make echoing the docker command would corrupt the YAML.
+	@$(HELM) template $(HELM_RELEASE) /work/helm/services \
+	  --namespace $(HELM_NS) $(VALUE_ARGS)
+
+.PHONY: helm-diff
+helm-diff: ## Ask the live apiserver what would change, without changing it
+	$(need_env_values)
+	$(HELM) template $(HELM_RELEASE) /work/helm/services \
+	  --namespace $(HELM_NS) $(VALUE_ARGS) | kubectl diff -f - || true
+
+.PHONY: helm-deploy
+helm-deploy: ## Apply the release — creates, updates and removes to match the files
+	$(need_env_values)
+	$(HELM) upgrade --install $(HELM_RELEASE) /work/helm/services \
+	  --namespace $(HELM_NS) --create-namespace $(VALUE_ARGS) \
+	  --wait --timeout 5m
+
+.PHONY: helm-status
+helm-status: ## What is deployed right now
+	$(HELM) list --namespace $(HELM_NS)
+	@kubectl get deploy,svc,ingress -n $(HELM_NS) \
+	  -l app.kubernetes.io/instance=$(HELM_RELEASE) 2>/dev/null || true
+
+.PHONY: helm-uninstall
+helm-uninstall: ## Remove the whole release (every service at once)
+	@read -p "Remove release '$(HELM_RELEASE)' from namespace '$(HELM_NS)'? Type the workspace name: " c; \
+	  if [[ "$$c" != "$(WORKSPACE)" ]]; then echo "aborted"; exit 1; fi
+	$(HELM) uninstall $(HELM_RELEASE) --namespace $(HELM_NS)
 
 # ─── Unknown targets ─────────────────────────────────────────────────────────
 # Plain make answers a typo with "No rule to make target 'plane'. Stop.", which

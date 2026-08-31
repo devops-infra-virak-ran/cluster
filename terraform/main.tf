@@ -139,15 +139,64 @@ module "compute" {
 }
 
 # ─── Registry ────────────────────────────────────────────────────────────────
-# One ECR repository per name in var.services, set in env/<workspace>.tfvars.
+# One ECR repository per service in the Helm catalogue.
 #
-# The full platform reads this list out of helm/services.yaml so that adding a
-# service to the catalogue creates its repository automatically. That coupling
-# is worth having once Helm exists; here it would only be a file reference to
-# a directory that is not in this tree.
+# The catalogue is helm/values/<group>/services.yaml — the same files Helm
+# deploys from. Terraform reads the names out of them rather than keeping its
+# own copy, so a service exists in exactly one place and adding it there
+# creates its repository on the next apply. Two lists that have to agree
+# eventually will not.
+#
+# Only names are read. Image tags and replica counts differ per environment,
+# live in helm/env/<workspace>.yaml, and are no business of the registry.
 
 locals {
-  service_names = sort(var.services)
+  values_dir = "${path.module}/../helm/values"
+
+  # Every group file. A group may be split across several files, so this is a
+  # glob rather than a fixed list.
+  catalogue_files = sort(tolist(fileset(local.values_dir, "*/*.yaml")))
+
+  # Decoded up front, and deliberately not wrapped in try(): a catalogue file
+  # that is not valid YAML fails the plan naming the file, rather than being
+  # silently skipped and taking its services' repositories with it.
+  catalogue = {
+    for f in local.catalogue_files :
+    f => yamldecode(file("${local.values_dir}/${f}"))
+  }
+
+  # A file with no `groups:` key — a shared _defaults.yaml, say — contributes
+  # nothing. distinct() because a service may be extended in a second file of
+  # its own group, and it still gets one repository.
+  #
+  # Disabled services are included. A parked service keeps its repository, and
+  # therefore its images, so re-enabling it does not mean rebuilding every tag.
+  service_names = sort(distinct(flatten([
+    for f, doc in local.catalogue : [
+      for group, g in try(doc.groups, {}) : try(keys(g.services), [])
+    ]
+  ])))
+}
+
+# The validation that used to sit on the `services` variable. ECR repository
+# names are the reason it matters: Terraform still owns those, so the check
+# belongs here even though the catalogue moved.
+resource "terraform_data" "service_names_guard" {
+  lifecycle {
+    precondition {
+      condition = alltrue([
+        for name in local.service_names : can(regex("^[a-z][a-z0-9-]*$", name))
+      ])
+      error_message = <<-ERR
+        A service name in the Helm catalogue is not usable as an ECR repository.
+
+        Names: lowercase letters, digits and hyphens, starting with a letter.
+
+        Found: ${join(", ", local.service_names)}
+        In:    helm/values/<group>/services.yaml
+      ERR
+    }
+  }
 }
 
 module "registry" {
@@ -270,6 +319,20 @@ locals {
     ansible_ssh_common_args='${local.ssh_common_args}'
   INI
 }
+
+# ─── Helm values ─────────────────────────────────────────────────────────────
+# Terraform no longer writes any. It used to render helm/generated/<ws>.yaml
+# from a `services` variable in env/<ws>.tfvars, which meant a service was
+# declared in Terraform and configured in Helm — two files, one of which you
+# always forgot.
+#
+# Now the whole service definition is Helm's:
+#
+#   helm/values/<group>/services.yaml   which services exist, everywhere
+#   helm/env/<workspace>.yaml           tags and replicas, per environment
+#
+# Terraform reads the first for names only, above, so `make apply` still
+# creates the ECR repositories. `make helm-deploy` passes both with -f.
 
 resource "local_file" "inventory" {
   content         = local.inventory

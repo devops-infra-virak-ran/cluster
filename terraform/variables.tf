@@ -22,23 +22,11 @@ variable "cluster_name" {
   default     = null
 }
 
-variable "services" {
-  type        = list(string)
-  description = <<-DESC
-    Services that need an ECR repository, one repository per name.
-
-    In the full platform this list is read out of helm/services.yaml so Helm
-    and Terraform cannot drift. Here it is a plain variable: this directory
-    builds AWS and nothing else, and reaching into a sibling directory that
-    does not exist is what stopped the copied configuration from validating.
-  DESC
-  default     = []
-
-  validation {
-    condition     = alltrue([for s in var.services : can(regex("^[a-z][a-z0-9-]*$", s))])
-    error_message = "Service names: lowercase letters, digits and hyphens, starting with a letter."
-  }
-}
+# The service catalogue used to be a `services` variable here. It moved to
+# helm/values/<group>/services.yaml, where the thing that deploys the services
+# also reads them; main.tf reads the names back out of those files to create
+# the ECR repositories. Per-environment tags and replicas live in
+# helm/env/<workspace>.yaml.
 
 variable "tags" {
   type        = map(string)

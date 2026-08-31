@@ -1,0 +1,40 @@
+# ─── web-service ─────────────────────────────────────────────────────────────
+# Browser-facing services, served at the root.
+#
+#   add a service     append a block under `services:`  (make svc-add)
+#   remove a service  delete its block                  (make svc-rm)
+#
+# The catalogue: which web services exist, and what is true about them in every
+# environment. Terraform reads the names out of it to create their ECR
+# repositories. Image tags and replica counts differ per environment and live
+# in helm/env/<workspace>.yaml, which merges on top of this file.
+
+groups:
+  web-service:
+
+    # ─── Defaults for every web service ──────────────────────────────────────
+    defaults:
+      probes:
+        # A rendering framework rarely serves /health, so the probes hit the
+        # root. Pointing them at /health would leave readiness failing forever
+        # and the Deployment would never finish rolling out.
+        path: /
+        readyPath: /
+        # SSR frameworks boot slowly. At 10s the kubelet kills the container
+        # before it ever listens, and the pod crash-loops for no visible reason.
+        initialDelaySeconds: 20
+
+    # ─── The services ────────────────────────────────────────────────────────
+    services:
+
+      # The Nuxt frontend.
+      client-side:
+        # Served at the root, not /api/client-side — so the route is named
+        # explicitly instead of coming from the group's routePrefix.
+        route: /
+        env:
+          # Two different addresses for the same API, on purpose:
+          #   the browser leaves the cluster and comes back via the ALB
+          NUXT_PUBLIC_API_BASE: /api
+          #   server-side rendering stays inside and dials the Service
+          AUTH_INTERNAL_URL: http://auth-api:80

@@ -1,0 +1,30 @@
+{{/*
+One ConfigMap per service that has a `config:` block, mounted with envFrom.
+
+The split between `env:` and `config:` is deliberate. `env:` values are
+rendered straight into the pod spec — fine for a handful of settings, and
+changing one rolls the pods because the pod spec itself changed. `config:`
+values live in a ConfigMap, which keeps a large set out of the Deployment and
+lets other objects reference it; the checksum annotation on the Deployment is
+what makes those changes roll the pods too.
+
+Neither belongs to secrets. Use `envFrom` with an existing Secret for those,
+so credentials never pass through values.yaml or a Helm release.
+*/}}
+{{- $all := include "services.all" $ | fromYaml }}
+{{- range $name, $svc := $all }}
+{{- if and $svc.enabled $svc.config }}
+{{- $ctx := dict "root" $ "name" $name "svc" $svc }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "services.name" $ctx }}
+  labels:
+    {{- include "services.labels" $ctx | nindent 4 }}
+data:
+  {{- range $k, $v := $svc.config }}
+  {{ $k }}: {{ $v | quote }}
+  {{- end }}
+{{- end }}
+{{- end }}

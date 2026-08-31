@@ -1,0 +1,42 @@
+{{/*
+One Service per enabled entry that asks for one.
+
+Same range, same merge, same enabled check as deployment.yaml. A service with
+`service.enabled: false` gets a Deployment and no Service — right for a worker
+that consumes a queue and listens on nothing.
+*/}}
+{{- $all := include "services.all" $ | fromYaml }}
+{{- range $name, $svc := $all }}
+{{- if and $svc.enabled $svc.service.enabled }}
+{{- $ctx := dict "root" $ "name" $name "svc" $svc }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "services.name" $ctx }}
+  labels:
+    {{- include "services.labels" $ctx | nindent 4 }}
+  {{- with $svc.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ $svc.service.type }}
+  ports:
+    - name: http
+      port: {{ $svc.service.port }}
+      targetPort: http
+      protocol: TCP
+      {{- if and $svc.service.nodePort (eq $svc.service.type "NodePort") }}
+      {{/*
+        A fixed nodePort is what lets an ALB target group point at a stable
+        port. Left unset, Kubernetes allocates one from 30000-32767 and it
+        changes when the Service is recreated, which quietly breaks the
+        target group.
+      */}}
+      nodePort: {{ $svc.service.nodePort }}
+      {{- end }}
+  selector:
+    {{- include "services.selectorLabels" $ctx | nindent 4 }}
+{{- end }}
+{{- end }}

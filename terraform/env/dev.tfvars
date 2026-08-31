@@ -30,7 +30,7 @@ enable_flow_logs   = false
 # A stale entry does not error: the security group drops the packets and SSH
 # hangs. 0.0.0.0/0 is rejected by the security module on purpose.
 
-ssh_allowed_cidrs       = ["124.248.190.205/32"]
+ssh_allowed_cidrs       = ["203.147.139.229/32"]
 apiserver_allowed_cidrs = []
 
 ssh_public_key_path  = "~/.ssh/id_ed25519.pub"
@@ -50,3 +50,17 @@ etcd_volume_size            = 20
 tags = {
   Owner = "learning"
 }
+
+# ─── Services ────────────────────────────────────────────────────────────────
+# Not here any more. A service is declared once, in the files Helm deploys it
+# from:
+#
+#   helm/values/<group>/services.yaml   which services exist, in every env
+#   helm/env/dev.yaml                   its image tag and replicas here
+#
+#   make svc-add NAME=payments-api GROUP=api-service TAG=0.1.0
+#   make svc-rm  NAME=payments-api
+#   make services WORKSPACE=dev
+#
+# Terraform still reads the service names out of the first to create their ECR
+# repositories, so `make apply` is what gives a new service a registry.

@@ -1,0 +1,29 @@
+# ─── staging ─────────────────────────────────────────────────────────────────
+# Prod-shaped, dev-sized. Two replicas everywhere: the smallest count that
+# makes a rolling update actually roll — with maxUnavailable: 0 and one
+# replica, the rollout has nowhere to put the new pod until the old one goes.
+#
+# Merged LAST, on top of helm/values/<group>/services.yaml, so anything named
+# here wins:
+#
+#   make helm-deploy WORKSPACE=staging
+#     -f helm/values/api-service/services.yaml    the catalogue
+#     -f helm/values/web-service/services.yaml
+#     -f helm/env/staging.yaml                    this file
+
+groups:
+  api-service:
+    services:
+      auth-api:
+        image: { tag: "0.1.0" }
+        replicas: 2
+
+      core-api:
+        image: { tag: "0.1.0" }
+        replicas: 2
+
+  web-service:
+    services:
+      client-side:
+        image: { tag: "0.1.0" }
+        replicas: 2

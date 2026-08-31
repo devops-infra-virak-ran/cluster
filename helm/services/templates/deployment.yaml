@@ -1,0 +1,133 @@
+{{/*
+One Deployment per enabled entry under `services:`.
+
+There is no per-service template and no copy of this file — `range` walks the
+map, so the number of Deployments is however many entries values.yaml has.
+Delete an entry and its Deployment is absent from the manifest Helm renders;
+`helm upgrade` compares that manifest with the last release and deletes what
+is no longer there.
+
+Map keys are iterated in sorted order, so the rendered output is stable and a
+`helm diff` shows only what actually changed.
+*/}}
+{{- $all := include "services.all" $ | fromYaml }}
+{{- range $name, $svc := $all }}
+{{- if $svc.enabled }}
+{{- $ctx := dict "root" $ "name" $name "svc" $svc }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "services.name" $ctx }}
+  labels:
+    {{- include "services.labels" $ctx | nindent 4 }}
+spec:
+  replicas: {{ $svc.replicas }}
+  {{- with $svc.strategy }}
+  strategy:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "services.selectorLabels" $ctx | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "services.labels" $ctx | nindent 8 }}
+      annotations:
+        {{- if $svc.config }}
+        {{/*
+          Roll the pods when the ConfigMap changes. Without this a config edit
+          updates the ConfigMap and nothing restarts, so the change silently
+          does not take effect until something else causes a restart.
+        */}}
+        checksum/config: {{ toYaml $svc.config | sha256sum }}
+        {{- end }}
+        {{- with $svc.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- with $.Values.global.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $svc.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: {{ $name }}
+          image: {{ include "services.image" $ctx | quote }}
+          imagePullPolicy: {{ $svc.image.pullPolicy }}
+          {{- with $svc.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          ports:
+            - name: http
+              containerPort: {{ $svc.port }}
+              protocol: TCP
+            {{- range $svc.extraPorts }}
+            - {{- toYaml . | nindent 14 }}
+            {{- end }}
+          env:
+            {{/*
+              PORT is set from the same value the Service and probes use, so a
+              port change is one edit rather than three that can disagree.
+            */}}
+            - name: PORT
+              value: {{ $svc.port | quote }}
+            {{- range $k, $v := $svc.env }}
+            - name: {{ $k }}
+              value: {{ $v | quote }}
+            {{- end }}
+          {{- if or $svc.config $svc.envFrom }}
+          envFrom:
+            {{- if $svc.config }}
+            - configMapRef:
+                name: {{ include "services.name" $ctx }}
+            {{- end }}
+            {{- range $svc.envFrom }}
+            - {{- toYaml . | nindent 14 }}
+            {{- end }}
+          {{- end }}
+          {{- if $svc.probes.enabled }}
+          livenessProbe:
+            httpGet:
+              path: {{ $svc.probes.path }}
+              port: http
+            initialDelaySeconds: {{ $svc.probes.initialDelaySeconds }}
+            periodSeconds: {{ $svc.probes.periodSeconds }}
+          readinessProbe:
+            httpGet:
+              path: {{ $svc.probes.readyPath | default $svc.probes.path }}
+              port: http
+            initialDelaySeconds: {{ $svc.probes.initialDelaySeconds }}
+            periodSeconds: {{ $svc.probes.periodSeconds }}
+          {{- end }}
+          {{- with $svc.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with $svc.volumeMounts }}
+          volumeMounts:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      {{- with $svc.volumes }}
+      volumes:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $svc.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $svc.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $svc.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}
+{{- end }}

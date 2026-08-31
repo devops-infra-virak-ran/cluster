@@ -1,0 +1,35 @@
+# ─── dev ─────────────────────────────────────────────────────────────────────
+# What differs about dev. One replica of everything: enough to see a rollout
+# and a route work, not enough to test what happens when a pod dies.
+#
+# Merged LAST, on top of helm/values/<group>/services.yaml, so anything named
+# here wins:
+#
+#   make helm-deploy WORKSPACE=dev
+#     -f helm/values/api-service/services.yaml    the catalogue
+#     -f helm/values/web-service/services.yaml
+#     -f helm/env/dev.yaml                        this file
+#
+# Tags are pinned per environment on purpose: the build running in dev is not
+# the one running in prod, and that difference has to live somewhere that is
+# not shared by both.
+#
+# A service listed here but not in the catalogue deploys nothing — `make
+# services` flags it. Add it to helm/values/<group>/services.yaml first.
+
+groups:
+  api-service:
+    services:
+      auth-api:
+        image: { tag: "0.1.0" }
+        replicas: 1
+
+      core-api:
+        image: { tag: "0.1.0" }
+        replicas: 1
+
+  web-service:
+    services:
+      client-side:
+        image: { tag: "0.1.0" }
+        replicas: 1

@@ -1,0 +1,56 @@
+{{/*
+One Ingress per service that declares a `route`.
+
+A service with no `route` is cluster-internal: reachable by other pods at its
+Service name, unreachable from outside. That is the right default — only the
+services that should be public say so.
+
+This cluster has no cloud controller manager, so Service type=LoadBalancer
+would stay Pending forever. Traffic arrives at the ALB, which forwards to the
+ingress controller's NodePort, and these rules do the routing from there.
+*/}}
+{{- if .Values.global.ingress.enabled }}
+{{- $all := include "services.all" $ | fromYaml }}
+{{- range $name, $svc := $all }}
+{{- if and $svc.enabled $svc.service.enabled $svc.route }}
+{{- $ctx := dict "root" $ "name" $name "svc" $svc }}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "services.name" $ctx }}
+  labels:
+    {{- include "services.labels" $ctx | nindent 4 }}
+  annotations:
+    {{- if $svc.rewrite }}
+    {{/*
+      The app is mounted at /api/auth but serves /. The capture group in the
+      path below is what $1 refers to; without the regex the rewrite has
+      nothing to substitute and every request lands on the target verbatim.
+    */}}
+    nginx.ingress.kubernetes.io/rewrite-target: {{ $svc.rewrite }}$1
+    nginx.ingress.kubernetes.io/use-regex: "true"
+    {{- end }}
+    {{- with $svc.ingressAnnotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  ingressClassName: {{ $.Values.global.ingress.className }}
+  rules:
+    {{- with $.Values.global.ingress.host }}
+    - host: {{ . | quote }}
+      http:
+    {{- else }}
+    - http:
+    {{- end }}
+        paths:
+          - path: {{ if $svc.rewrite }}{{ $svc.route | trimSuffix "/" }}(/|$)(.*){{ else }}{{ $svc.route }}{{ end }}
+            pathType: {{ if $svc.rewrite }}ImplementationSpecific{{ else }}Prefix{{ end }}
+            backend:
+              service:
+                name: {{ include "services.name" $ctx }}
+                port:
+                  number: {{ $svc.service.port }}
+{{- end }}
+{{- end }}
+{{- end }}

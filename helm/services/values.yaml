@@ -1,0 +1,108 @@
+# ─── The one file you edit ───────────────────────────────────────────────────
+#
+# This file holds only what is true for every service, everywhere. The
+# services themselves live under ../values/<group>/, and the Makefile passes
+# every one of those files with -f, plus the file for the workspace:
+#
+#     helm/values/
+#       api-service/services.yaml    auth-api, core-api
+#       web-service/services.yaml    client-side
+#     helm/env/
+#       dev.yaml staging.yaml prod.yaml    tags and replicas, per environment
+#
+# Adding a service is a block under `services:` in the right group file —
+# `make svc-add` writes it, and Terraform reads the same file to create the
+# ECR repository. Removing one is deleting that block.
+#
+# Merge order, most general to most specific:
+#
+#     defaults:                  this file — every service, any group
+#       └── groups.<g>.defaults: values/<g>/services.yaml, `defaults:`
+#             └── the service:   values/<g>/services.yaml, under `services:`
+#                   └── the env: env/<workspace>.yaml — tag and replicas
+
+# ─── Defaults for every service, in any group ────────────────────────────────
+
+defaults:
+  enabled: true
+  replicas: 2
+
+  image:
+    # No default repository on purpose: a service with no image is a mistake,
+    # and `required` in the template turns it into a clear error rather than a
+    # Deployment that pulls ":latest" from nowhere.
+    tag: latest
+    pullPolicy: IfNotPresent
+
+  port: 3000
+
+  service:
+    enabled: true
+    type: ClusterIP
+    port: 80
+    # nodePort:            # only meaningful when type is NodePort
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      # No CPU limit on purpose: throttling at the limit hurts tail latency
+      # more than it protects the node, and the kubelet reservations already
+      # keep the system's share safe.
+      memory: 512Mi
+
+  probes:
+    enabled: true
+    initialDelaySeconds: 10
+    periodSeconds: 10
+
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop: [ALL]
+
+  podSecurityContext:
+    fsGroup: 1000
+
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0     # never drop below `replicas` during a rollout
+      maxSurge: 1
+
+  env: {}                   # plain values, rendered inline
+  config: {}                # values that become a ConfigMap + envFrom
+  envFrom: []               # existing Secrets/ConfigMaps, by name
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+# ─── Cluster-wide settings ───────────────────────────────────────────────────
+
+global:
+  # Prefixed to every image.repository that is not already fully qualified,
+  # so the registry is named once rather than in every entry.
+  imageRegistry: ""
+
+  imagePullSecrets:
+    - name: regcred          # refreshed by the ECR credentials CronJob
+
+  ingress:
+    enabled: true
+    className: nginx
+    # host: apps.example.com   # unset = match any host, which is what the
+    #                            ALB's DNS name needs until you own a domain
+
+# ─── Groups ──────────────────────────────────────────────────────────────────
+# Filled in from ../values/<group>/*.yaml, then ../env/<workspace>.yaml. Empty
+# here so the chart renders nothing on its own — `helm template helm/services`
+# with no -f is a valid, empty release rather than an error.
+#
+# The group name becomes app.kubernetes.io/component on every object:
+#
+#     kubectl get deploy -l app.kubernetes.io/component=api-service
+
+groups: {}

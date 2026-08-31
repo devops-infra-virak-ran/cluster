@@ -1,0 +1,22 @@
+apiVersion: v2
+name: services
+description: >-
+  Every application service in one release. The chart holds no per-service
+  templates: services are entries under `services:` in values.yaml, and the
+  templates range over them. Adding an entry creates a Deployment and a
+  Service; removing one deletes them on the next upgrade.
+
+type: application
+
+# version    — the chart's own version. Bump when the templates change.
+# appVersion — informational only here. Each service pins its own image tag,
+#              so there is no single application version to report.
+version: 1.0.0
+appVersion: "1.0.0"
+
+keywords:
+  - microservices
+  - multi-service
+
+maintainers:
+  - name: virak

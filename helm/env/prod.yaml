@@ -1,0 +1,32 @@
+# ─── prod ────────────────────────────────────────────────────────────────────
+# Three of everything, four of core-api: one replica per AZ, so losing a
+# datacentre costs a third of the capacity rather than the service.
+#
+# Merged LAST, on top of helm/values/<group>/services.yaml, so anything named
+# here wins:
+#
+#   make helm-deploy WORKSPACE=prod
+#     -f helm/values/api-service/services.yaml    the catalogue
+#     -f helm/values/web-service/services.yaml
+#     -f helm/env/prod.yaml                       this file
+#
+# Read this next to dev.yaml. The tags are the point: promoting a build to prod
+# is a change to one line in this file, reviewed on its own, with the version
+# it replaces visible in the diff.
+
+groups:
+  api-service:
+    services:
+      auth-api:
+        image: { tag: "0.1.0" }
+        replicas: 3
+
+      core-api:
+        image: { tag: "0.1.0" }
+        replicas: 4
+
+  web-service:
+    services:
+      client-side:
+        image: { tag: "0.1.0" }
+        replicas: 3

@@ -219,7 +219,10 @@ The copied configuration did not work. All three bugs also exist in
 
 **It could not validate.** `main.tf` read `../helm/services.yaml` to decide
 which ECR repositories to create — a file that does not exist in this tree.
-Replaced with a plain `services` variable in `env/<workspace>.tfvars`.
+It now reads `helm/values/<group>/services.yaml`, the same files Helm deploys
+from, so the catalogue is in one place and a service added there gets its
+repository on the next apply. Image tags and replica counts differ per
+environment and live in `helm/env/<workspace>.yaml`.
 
 **The AMI lookup matched nothing, in any region.** It asked for
 `hvm-ssd-gp3` + `ubuntu-jammy-22.04`, and Canonical publishes 22.04 only under

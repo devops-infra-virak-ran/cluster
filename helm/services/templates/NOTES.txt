@@ -1,0 +1,21 @@
+{{ .Chart.Name }} {{ .Chart.Version }} — release {{ .Release.Name }} in namespace {{ .Release.Namespace }}
+{{- $all := include "services.all" $ | fromYaml }}
+{{- range $group, $g := .Values.groups }}
+
+{{ $group }}:
+{{- range $name, $cfg := ($g.services | default dict) }}
+{{- $svc := index $all $name }}
+{{- if $svc.enabled }}
+  {{ printf "%-16s" $name }} {{ include "services.image" (dict "root" $ "name" $name "svc" $svc) }}  x{{ $svc.replicas }}{{ if $svc.route }}  →  {{ $svc.route }}{{ else }}  (internal only){{ end }}
+{{- else }}
+  {{ printf "%-16s" $name }} disabled
+{{- end }}
+{{- end }}
+{{- end }}
+
+Check them:
+  kubectl -n {{ .Release.Namespace }} get deploy,svc,ingress -l app.kubernetes.io/instance={{ .Release.Name }}
+  kubectl -n {{ .Release.Namespace }} get deploy -l app.kubernetes.io/component=api
+
+Add a service:     add an entry under the right group in values.yaml, then helm upgrade
+Remove a service:  delete its entry, then helm upgrade — Helm deletes what is no longer rendered
