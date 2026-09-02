@@ -66,13 +66,30 @@ kubectl create namespace "${NAMESPACE}" --dry-run=client -o yaml | kubectl apply
 # exists, and this script has to be safe to run twice.
 
 echo "==> minting a token from this machine"
-aws ecr get-login-password --region "${REGION}" \
-  | kubectl create secret docker-registry "${SECRET}" \
-      --docker-server="${REGISTRY}" \
-      --docker-username=AWS \
-      --docker-password-stdin \
-      --namespace "${NAMESPACE}" \
-      --dry-run=client -o yaml \
+
+# The secret is assembled by hand rather than with `create secret
+# docker-registry --docker-password=`, which would put a live registry
+# credential in the process table for anyone on this machine to read. There is
+# no --docker-password-stdin: that flag belongs to `docker login`, not kubectl.
+TMP="$(mktemp -d)"
+trap 'rm -rf "${TMP}"' EXIT
+chmod 700 "${TMP}"
+
+token="$(aws ecr get-login-password --region "${REGION}")"
+[[ -n "${token}" ]] || { echo "error: ECR returned no token — check your AWS credentials." >&2; exit 1; }
+
+# An ECR token is base64, so it needs no JSON escaping. `auth` is the field
+# containerd actually reads; username/password are there for tools that look
+# at those instead.
+printf '{"auths":{"%s":{"username":"AWS","password":"%s","auth":"%s"}}}' \
+  "${REGISTRY}" "${token}" "$(printf 'AWS:%s' "${token}" | base64 -w0)" \
+  > "${TMP}/.dockerconfigjson"
+
+kubectl create secret generic "${SECRET}" \
+  --type=kubernetes.io/dockerconfigjson \
+  --from-file=.dockerconfigjson="${TMP}/.dockerconfigjson" \
+  --namespace "${NAMESPACE}" \
+  --dry-run=client -o yaml \
   | kubectl apply -f - >/dev/null
 echo "    ${SECRET} in ${NAMESPACE}, good for 12 hours"
 

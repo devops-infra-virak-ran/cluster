@@ -20,6 +20,20 @@ TF_DIR    := $(CURDIR)/terraform
 WORKSPACE ?= dev
 VARS      := env/$(WORKSPACE).tfvars
 
+# Every kubectl in this file talks to THIS workspace's cluster, and nothing
+# else. Exported, because `kubectl` on the host would otherwise read
+# ~/.kube/config — whatever cluster that happens to point at, from whenever.
+#
+# That is not a theoretical mix-up. Every kubeconfig this repository writes
+# uses https://127.0.0.1:6443, because they all reach the apiserver through an
+# SSH tunnel on the same local port. So a stale default config does not fail to
+# connect; it connects to whichever tunnel is open, with the wrong cluster's
+# credentials, and fails with an x509 error that reads like a broken cluster
+# rather than the wrong file.
+#
+# Set here rather than per-recipe so scripts/ inherit it too.
+export KUBECONFIG := $(HOME)/.kube/config-$(WORKSPACE)
+
 # Kubespray runs from its official container image, so the only thing to
 # install is Docker. The tag pins Ansible, Python and the Kubespray release
 # together, which is why a laptop and a CI agent run identical code.
@@ -104,6 +118,39 @@ define warn_offline
 endef
 
 # For `make url` and `make ingress`, which need the load balancer specifically.
+# The tunnel is a process, not a setting: it dies with the terminal that
+# started it, with the laptop sleeping, or with the bastion's IP changing. Its
+# absence surfaces as whatever the command happened to be doing at the time —
+# `make storage` reports "failed to download openapi", which reads like a
+# broken cluster and says nothing about a tunnel.
+# Resolve every image against ECR before applying anything. A tag that was
+# never pushed is otherwise found by the kubelet, and surfaces as helm's
+# "context deadline exceeded" five minutes later — an error about waiting,
+# which names neither the image nor the reason.
+define need_images
+	@$(HELM) template $(HELM_RELEASE) /work/helm/services \
+	  --namespace $(HELM_NS) $(VALUE_ARGS) $(HELM_SETS) 2>/dev/null \
+	  | scripts/check-images.sh
+endef
+
+define need_cluster
+	@test -f "$(KUBECONFIG)" || { \
+	  echo "error: no kubeconfig at $(KUBECONFIG)"; \
+	  echo "         make tunnel WORKSPACE=$(WORKSPACE)"; \
+	  exit 1; }
+	@kubectl version -o json --request-timeout=10s >/dev/null 2>&1 || { \
+	  echo "error: cannot reach the $(WORKSPACE) apiserver."; \
+	  echo "       kubeconfig: $(KUBECONFIG)"; \
+	  echo; \
+	  echo "       Usually the SSH tunnel is not running — it does not survive"; \
+	  echo "       the terminal that started it:"; \
+	  echo "         make tunnel WORKSPACE=$(WORKSPACE)"; \
+	  echo; \
+	  echo "       If the bastion's address changed, re-run it: the tunnel is"; \
+	  echo "       pinned to the IP it was created with."; \
+	  exit 1; }
+endef
+
 define need_alb
 	@r="$$($(TF_OUT) alb_url 2>/dev/null)"; test -n "$$r" || { \
 	  echo "error: workspace '$(WORKSPACE)' has no load balancer yet."; \
@@ -375,6 +422,7 @@ tunnel-stop: ## Stop a backgrounded tunnel
 
 .PHONY: storage
 storage: ## Install the EBS CSI driver and make gp3 the default StorageClass
+	$(need_cluster)
 	kubectl apply -k "github.com/kubernetes-sigs/aws-ebs-csi-driver/deploy/kubernetes/overlays/stable/?ref=$(EBS_CSI_VERSION)"
 	kubectl apply -f kubespray/storage/gp3-storageclass.yaml
 
@@ -427,6 +475,7 @@ svc-rm: ## Remove a service: make svc-rm NAME=payments-api
 
 .PHONY: ingress
 ingress: ## Install the ingress controller the ALB forwards to
+	$(need_cluster)
 	$(need_alb)
 	@# Pinned to the NodePort Terraform built the target group around. If these
 	@# two numbers ever disagree the ALB health check fails on every target and
@@ -451,6 +500,7 @@ ingress: ## Install the ingress controller the ALB forwards to
 
 .PHONY: ecr-auth
 ecr-auth: ## Give the cluster a pull secret for ECR, and a CronJob to refresh it
+	$(need_cluster)
 	@scripts/ecr-auth.sh $(WORKSPACE) $(HELM_NS)
 
 .PHONY: url
@@ -494,6 +544,7 @@ helm-render: ## Print the Kubernetes YAML this release would apply
 helm-diff: ## Ask the live apiserver what would change, without changing it
 	$(need_env_values)
 	$(need_registry)
+	$(need_cluster)
 	$(HELM) template $(HELM_RELEASE) /work/helm/services \
 	  --namespace $(HELM_NS) $(VALUE_ARGS) $(HELM_SETS) | kubectl diff -f - || true
 
@@ -501,12 +552,17 @@ helm-diff: ## Ask the live apiserver what would change, without changing it
 helm-deploy: ## Apply the release — creates, updates and removes to match the files
 	$(need_env_values)
 	$(need_registry)
+	$(need_cluster)
+	$(need_images)
+	@# --atomic rolls the release back if it does not become ready, rather
+	@# than leaving it `failed` for the next deploy to inherit.
 	$(HELM) upgrade --install $(HELM_RELEASE) /work/helm/services \
 	  --namespace $(HELM_NS) --create-namespace $(VALUE_ARGS) $(HELM_SETS) \
-	  --wait --timeout 5m
+	  --atomic --wait --timeout 5m
 
 .PHONY: helm-status
 helm-status: ## What is deployed right now
+	$(need_cluster)
 	$(HELM) list --namespace $(HELM_NS)
 	@kubectl get deploy,svc,ingress -n $(HELM_NS) \
 	  -l app.kubernetes.io/instance=$(HELM_RELEASE) 2>/dev/null || true

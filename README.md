@@ -3,32 +3,75 @@
 AWS infrastructure and the Kubernetes cluster on top of it. One Terraform root,
 one environment per workspace.
 
+## Quick start
+
+Once, on a new machine:
+
 ```bash
-make plan       WORKSPACE=dev
-make apply      WORKSPACE=dev
-
-make kubespray-pull   WORKSPACE=dev
-make kubespray-ping   WORKSPACE=dev    # do this before the slow one
-make kubespray-deploy WORKSPACE=dev    # 20-40 minutes
-
-make cluster-up WORKSPACE=dev    # the above, then Kubespray on the nodes
-make destroy    WORKSPACE=dev
-
-make myip WORKSPACE=dev
-
-make myip WORKSPACE=dev && make cluster-up WORKSPACE=dev
-
-make kubeconfig  WORKSPACE=dev   # required — nothing below works without it
-make storage     WORKSPACE=dev   # only if you need PVCs
-make ingress     WORKSPACE=dev   # the controller the ALB forwards to
-make helm-deploy WORKSPACE=dev   # ← will fail, see below
-make url         WORKSPACE=dev
-
+make init                        # download providers
+make myip-set WORKSPACE=dev      # put your public IP in the SSH allowlist
 ```
 
-No Helm, no other cloud, and nothing that deploys workloads. This directory
-builds machines, the network around them, and a cluster on them — and stops
-there.
+You need Docker, Terraform, AWS credentials, and an SSH key at
+`~/.ssh/id_ed25519` — everything else runs from pinned containers.
+
+Then, from nothing to a URL that answers:
+
+```bash
+make up WORKSPACE=dev            # 35-55 minutes
+```
+
+And to stop the billing:
+
+```bash
+make cluster-down WORKSPACE=dev  # ELBs and volumes Terraform does not know about
+make destroy      WORKSPACE=dev
+```
+
+### What `up` runs
+
+Each of these works on its own, in this order, if you would rather watch it
+happen a step at a time.
+
+| # | Command | Minutes | What it does |
+| - | ------- | ------- | ------------ |
+| 1 | `make myip` | — | Refuses to continue if your IP is not allowlisted |
+| 2 | `make apply` | 5-8 | VPC, bastion, nodes, ECR repositories, the ALB |
+| 3 | `make kubespray-pull` | 1-3 | The pinned Kubespray image |
+| 4 | `make kubespray-ping` | — | Ansible reaches every node through the bastion |
+| 5 | `make kubespray-deploy` | 20-40 | Kubernetes itself |
+| 6 | `make tunnel` | — | A kubeconfig, and an SSH tunnel to the apiserver |
+| 7 | `make storage` | 1 | EBS CSI driver, gp3 as the default StorageClass |
+| 8 | `make ingress` | 1-2 | ingress-nginx, pinned to the NodePort the ALB polls |
+| 9 | `make ecr-auth` | — | The pull secret, and a CronJob that refreshes it |
+| 10 | `make helm-deploy` | 1-2 | Every service in the catalogue |
+| 11 | `make url` | — | Where each one answers |
+
+Three of those orderings are load-bearing:
+
+- **`tunnel`, not `kubeconfig`.** They do the same thing, but `kubeconfig`
+  holds the tunnel in the foreground until Ctrl-C, which would stop a chained
+  run dead.
+- **`ecr-auth` before `helm-deploy`.** The pull secret has to exist when the
+  first pod is scheduled. Otherwise it lands in `ImagePullBackOff` and
+  `helm-deploy --wait` sits there until it times out.
+- **`ingress` before `helm-deploy`.** Not required, but the ALB's targets only
+  go healthy once something answers on the NodePort, so doing it first means
+  `url` works the moment it prints.
+
+### Day to day
+
+Once the cluster is up, deploying a change is the last step alone:
+
+```bash
+make services    WORKSPACE=dev   # what is in the catalogue, and at which tag
+make helm-diff   WORKSPACE=dev   # what would change
+make helm-deploy WORKSPACE=dev
+```
+
+This directory builds the machines, the network around them, the cluster on
+them, and the one Helm release that runs on that. What it does not do is
+multi-cloud, or anything CI-shaped.
 
 ---
 
@@ -195,6 +238,10 @@ make kubeconfig WORKSPACE=dev    # kubectl, through the bastion
 make storage    WORKSPACE=dev    # EBS CSI driver + a default StorageClass
 ```
 
+`cluster-up` stops at a working Kubernetes with nothing running on it. `make
+up` is the same plus ingress, ECR credentials and the Helm release — see
+[Quick start](#quick-start).
+
 The first `cluster.yml` takes 20-40 minutes. Everything runs from
 `quay.io/kubespray/kubespray:v2.31.0`, so the only tool to install is Docker.
 
@@ -203,19 +250,24 @@ Two things this cluster deliberately does not have — both explained in
 
 - **No cloud controller manager.** Kubernetes dropped the in-tree AWS provider
   in 1.31 and Kubespray v2.31.0 ships no replacement, so `Service
-type=LoadBalancer` stays Pending. Ingress is the ALB pointed at the NodePort
-  range.
+  type=LoadBalancer` stays Pending. Ingress is the ALB that Terraform creates,
+  pointed at the NodePort `make ingress` pins the controller to.
 - **No storage until `make storage`.** Kubespray's bundled EBS CSI driver
   points at an image last published in 2021; the upstream release is installed
   instead.
+- **No ECR credentials until `make ecr-auth`.** The node role has the pull
+  permission, but IAM permission is not a registry login — and the kubelet no
+  longer makes that exchange itself. Upstream publishes no
+  `ecr-credential-provider` binary, so this uses a pull secret refreshed every
+  six hours instead. Without it, every pod sits in `ImagePullBackOff`.
 
 Before tearing an environment down, `make cluster-down` — Kubernetes creates
 ELBs and EBS volumes that Terraform does not know about, and they keep billing
 after `make destroy`, as well as blocking the VPC from deleting.
 
-The full platform in [`../devops/`](../devops/) is this plus Helm, a service
-catalogue, monitoring and multi-cloud deploy targets. Come back to it when this
-directory holds no surprises.
+The full platform in [`../devops/`](../devops/) is this plus monitoring and
+multi-cloud deploy targets. Come back to it when this directory holds no
+surprises.
 
 ---
 

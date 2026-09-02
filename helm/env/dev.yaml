@@ -21,15 +21,15 @@ groups:
   api-service:
     services:
       auth-api:
-        image: { tag: "0.1.0" }
+        image: { tag: "v2.0.0" }
         replicas: 1
 
       core-api:
-        image: { tag: "0.1.0" }
+        image: { tag: "v1.0.2" }
         replicas: 1
 
   web-service:
     services:
       client-side:
-        image: { tag: "0.1.0" }
+        image: { tag: "v1.0.0" }
         replicas: 1
