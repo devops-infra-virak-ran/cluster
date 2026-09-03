@@ -81,6 +81,41 @@ resource "terraform_data" "workspace_guard" {
   }
 }
 
+# Which AWS account the credentials in your shell actually point at.
+#
+# Without this, changing credentials does not fail — it succeeds against the
+# wrong account. Terraform finds none of the resources in its state, plans to
+# create all of them, and builds a complete second environment while the first
+# one keeps running and billing. The errors it does produce are unhelpful:
+# ELBv2 rejects another account's ARN as "not a valid load balancer ARN"
+# rather than saying it belongs to someone else.
+#
+# Only checked when aws_account_id is set in the tfvars. Null skips it.
+resource "terraform_data" "account_guard" {
+  lifecycle {
+    precondition {
+      condition = (
+        var.aws_account_id == null ||
+        var.aws_account_id == data.aws_caller_identity.current.account_id
+      )
+      error_message = <<-ERR
+        Wrong AWS account.
+
+          credentials point at   ${data.aws_caller_identity.current.account_id}
+          ${terraform.workspace} expects            ${coalesce(var.aws_account_id, "(unset)")}
+
+        Applying now would build a second copy of ${terraform.workspace} in the
+        wrong account, while the real one keeps running and billing.
+
+            aws sts get-caller-identity --query Account --output text
+
+        Fix the credentials, or change aws_account_id in
+        terraform/env/${terraform.workspace}.tfvars if the move is deliberate.
+      ERR
+    }
+  }
+}
+
 # ─── Network ─────────────────────────────────────────────────────────────────
 
 module "network" {

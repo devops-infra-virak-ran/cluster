@@ -1,0 +1,4 @@
+# Real environment files hold credentials. The .example templates beside them
+# are committed, and must never contain a real one.
+env/*.env
+!env/*.env.example

@@ -9,6 +9,10 @@
 project_name = "upskill-devops"
 region       = "us-east-1"
 
+# The account this environment lives in. Every plan checks your credentials
+# still point here before it touches anything — see terraform_data.account_guard.
+aws_account_id = "570417737010"
+
 # ─── Network ─────────────────────────────────────────────────────────────────
 
 vpc_cidr           = "10.0.0.0/16"
@@ -30,7 +34,7 @@ enable_flow_logs   = false
 # A stale entry does not error: the security group drops the packets and SSH
 # hangs. 0.0.0.0/0 is rejected by the security module on purpose.
 
-ssh_allowed_cidrs       = ["117.20.115.36/32"]
+ssh_allowed_cidrs       = ["203.147.139.229/32"]
 apiserver_allowed_cidrs = []
 
 ssh_public_key_path  = "~/.ssh/id_ed25519.pub"
@@ -41,10 +45,25 @@ node_ssh_user        = "ubuntu"
 # One control plane: no etcd quorum, so this cannot survive losing it. Fine
 # for learning, wrong for anything else — see prod.tfvars.
 
-control_plane_count         = 3
-control_plane_instance_type = "t3.medium"
+# This account is on the AWS Free Tier plan, which rejects RunInstances for
+# any type not on its eligible list — t3.medium among them:
+#
+#   InvalidParameterCombination: The specified instance type is not
+#   eligible for Free Tier
+#
+# Eligible here, x86 only (t4g.* are Graviton/arm64 and will not boot the
+# Ubuntu amd64 AMI this module selects):
+#
+#   c7i-flex.large   2 vCPU   4 GiB    what this uses
+#   m7i-flex.large   2 vCPU   8 GiB    if a worker needs more room
+#   t3.small         2 vCPU   2 GiB    too tight for a control plane + etcd
+#   t3.micro         2 vCPU   1 GiB    Kubespray will not run on it
+#
+#   aws ec2 describe-instance-types --filters Name=free-tier-eligible,Values=true
+control_plane_count         = 1
+control_plane_instance_type = "c7i-flex.large"
 worker_count                = 3
-worker_instance_type        = "t3.medium"
+worker_instance_type        = "c7i-flex.large"
 etcd_volume_size            = 20
 
 tags = {

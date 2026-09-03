@@ -33,19 +33,19 @@ make destroy      WORKSPACE=dev
 Each of these works on its own, in this order, if you would rather watch it
 happen a step at a time.
 
-| # | Command | Minutes | What it does |
-| - | ------- | ------- | ------------ |
-| 1 | `make myip` | — | Refuses to continue if your IP is not allowlisted |
-| 2 | `make apply` | 5-8 | VPC, bastion, nodes, ECR repositories, the ALB |
-| 3 | `make kubespray-pull` | 1-3 | The pinned Kubespray image |
-| 4 | `make kubespray-ping` | — | Ansible reaches every node through the bastion |
-| 5 | `make kubespray-deploy` | 20-40 | Kubernetes itself |
-| 6 | `make tunnel` | — | A kubeconfig, and an SSH tunnel to the apiserver |
-| 7 | `make storage` | 1 | EBS CSI driver, gp3 as the default StorageClass |
-| 8 | `make ingress` | 1-2 | ingress-nginx, pinned to the NodePort the ALB polls |
-| 9 | `make ecr-auth` | — | The pull secret, and a CronJob that refreshes it |
-| 10 | `make helm-deploy` | 1-2 | Every service in the catalogue |
-| 11 | `make url` | — | Where each one answers |
+| #   | Command                 | Minutes | What it does                                        |
+| --- | ----------------------- | ------- | --------------------------------------------------- |
+| 1   | `make myip`             | —       | Refuses to continue if your IP is not allowlisted   |
+| 2   | `make apply`            | 5-8     | VPC, bastion, nodes, ECR repositories, the ALB      |
+| 3   | `make kubespray-pull`   | 1-3     | The pinned Kubespray image                          |
+| 4   | `make kubespray-ping`   | —       | Ansible reaches every node through the bastion      |
+| 5   | `make kubespray-deploy` | 20-40   | Kubernetes itself                                   |
+| 6   | `make tunnel`           | —       | A kubeconfig, and an SSH tunnel to the apiserver    |
+| 7   | `make storage`          | 1       | EBS CSI driver, gp3 as the default StorageClass     |
+| 8   | `make ingress`          | 1-2     | ingress-nginx, pinned to the NodePort the ALB polls |
+| 9   | `make ecr-auth`         | —       | The pull secret, and a CronJob that refreshes it    |
+| 10  | `make helm-deploy`      | 1-2     | Every service in the catalogue                      |
+| 11  | `make url`              | —       | Where each one answers                              |
 
 Three of those orderings are load-bearing:
 
@@ -250,7 +250,7 @@ Two things this cluster deliberately does not have — both explained in
 
 - **No cloud controller manager.** Kubernetes dropped the in-tree AWS provider
   in 1.31 and Kubespray v2.31.0 ships no replacement, so `Service
-  type=LoadBalancer` stays Pending. Ingress is the ALB that Terraform creates,
+type=LoadBalancer` stays Pending. Ingress is the ALB that Terraform creates,
   pointed at the NodePort `make ingress` pins the controller to.
 - **No storage until `make storage`.** Kubespray's bundled EBS CSI driver
   points at an image last published in 2021; the upstream release is installed
@@ -311,6 +311,14 @@ aws ec2 describe-images --owners 099720109477 --region us-east-1 \
 ```
 
 ```bash
+make ecr-auth WORKSPACE=dev
+make env-apply WORKSPACE=dev
+```
+
+```bash
+export KUBECONFIG=~/.kube/config-dev
+
+kubectl get nodes
 kubectl get nodes                    # the answer, most of the time
 kubectl get nodes -o wide            # + internal IPs, OS, container runtime
 kubectl get nodes -w                 # live — watch a node flip during scale/upgrade

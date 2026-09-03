@@ -28,6 +28,24 @@ variable "cluster_name" {
 # the ECR repositories. Per-environment tags and replicas live in
 # helm/env/<workspace>.yaml.
 
+variable "aws_account_id" {
+  type        = string
+  description = <<-DESC
+    The AWS account this environment belongs to.
+
+    Set it, and every plan checks the credentials in your shell actually point
+    there. Leave it null and there is no check — which is how a credential
+    change ends up building a second copy of an environment in the wrong
+    account while the first keeps running and billing.
+  DESC
+  default     = null
+
+  validation {
+    condition     = var.aws_account_id == null || can(regex("^[0-9]{12}$", var.aws_account_id))
+    error_message = "An AWS account id is 12 digits."
+  }
+}
+
 variable "tags" {
   type        = map(string)
   description = "Extra tags merged into every resource"
@@ -108,7 +126,7 @@ variable "ingress_nodeport" {
 variable "control_plane_count" {
   type        = number
   description = "Control-plane nodes. 1 for dev, 3 for a real etcd quorum."
-  default     = 3
+  default     = 1
 }
 
 variable "control_plane_instance_type" {

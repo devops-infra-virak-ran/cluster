@@ -20,6 +20,10 @@ TF_DIR    := $(CURDIR)/terraform
 WORKSPACE ?= dev
 VARS      := env/$(WORKSPACE).tfvars
 
+# Read from the tfvars so it cannot disagree with what Terraform used. Only the
+# aws CLI calls in this file need it; Terraform reads the variable itself.
+REGION    := $(shell sed -n 's/^[[:space:]]*region[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' $(CURDIR)/terraform/env/$(WORKSPACE).tfvars 2>/dev/null | head -1)
+
 # Every kubectl in this file talks to THIS workspace's cluster, and nothing
 # else. Exported, because `kubectl` on the host would otherwise read
 # ~/.kube/config — whatever cluster that happens to point at, from whenever.
@@ -349,6 +353,7 @@ up: ## Everything: infrastructure, Kubernetes, ingress, services, URL (35-55 min
 	@$(MAKE) --no-print-directory storage WORKSPACE=$(WORKSPACE)
 	@$(MAKE) --no-print-directory ingress WORKSPACE=$(WORKSPACE)
 	@$(MAKE) --no-print-directory ecr-auth WORKSPACE=$(WORKSPACE)
+	@$(MAKE) --no-print-directory env-apply WORKSPACE=$(WORKSPACE)
 	@$(MAKE) --no-print-directory helm-deploy WORKSPACE=$(WORKSPACE)
 	@echo
 	@$(MAKE) --no-print-directory url WORKSPACE=$(WORKSPACE)
@@ -426,6 +431,65 @@ storage: ## Install the EBS CSI driver and make gp3 the default StorageClass
 	kubectl apply -k "github.com/kubernetes-sigs/aws-ebs-csi-driver/deploy/kubernetes/overlays/stable/?ref=$(EBS_CSI_VERSION)"
 	kubectl apply -f kubespray/storage/gp3-storageclass.yaml
 
+# ─── Pausing ─────────────────────────────────────────────────────────────────
+# Stopping the nodes keeps everything that is slow or annoying to rebuild — the
+# disks, the cluster's etcd data, the VPC, the ECR images — and stops paying
+# for the compute, which is most of the bill.
+#
+# It works because a stopped instance in a VPC keeps its PRIVATE ip. The
+# Kubespray inventory and every kubeconfig address nodes by private ip, so
+# they are all still correct when it starts again. The bastion keeps its public
+# address too, because that is an Elastic IP rather than an ephemeral one.
+#
+# What it does NOT stop: EBS volumes, the NAT gateway, the load balancer, and
+# public IPv4 addresses. Those bill whether or not anything is running, and the
+# only way to stop them is to delete them — `make destroy`, or `make pause-hard`.
+
+define instance_filter
+--filters Name=tag:Environment,Values=$(WORKSPACE) Name=tag:ManagedBy,Values=terraform
+endef
+
+.PHONY: pause
+pause: ## Stop the nodes, keep the disks and cluster state (~75% off the bill)
+	@ids=$$(aws ec2 describe-instances --region $(REGION) $(instance_filter) \
+	  Name=instance-state-name,Values=running \
+	  --query 'Reservations[].Instances[].InstanceId' --output text); \
+	  test -n "$$ids" || { echo "nothing running in $(WORKSPACE)"; exit 0; }; \
+	  echo "Stopping:"; aws ec2 describe-instances --region $(REGION) --instance-ids $$ids \
+	    --query 'Reservations[].Instances[].[InstanceId,InstanceType,Tags[?Key==`Name`]|[0].Value]' \
+	    --output text | sed 's/^/    /'; \
+	  aws ec2 stop-instances --region $(REGION) --instance-ids $$ids \
+	    --query 'StoppingInstances[].InstanceId' --output text >/dev/null; \
+	  echo; echo "Stopped. Still billing: EBS volumes, the NAT gateway, the load"; \
+	  echo "balancer and the public IPv4 addresses — see 'make pause-hard'."; \
+	  echo "    make resume WORKSPACE=$(WORKSPACE)"
+
+.PHONY: resume
+resume: ## Start the nodes again after `make pause`
+	@ids=$$(aws ec2 describe-instances --region $(REGION) $(instance_filter) \
+	  Name=instance-state-name,Values=stopped \
+	  --query 'Reservations[].Instances[].InstanceId' --output text); \
+	  test -n "$$ids" || { echo "nothing stopped in $(WORKSPACE)"; exit 0; }; \
+	  aws ec2 start-instances --region $(REGION) --instance-ids $$ids \
+	    --query 'StartingInstances[].InstanceId' --output text | tr '\t' '\n' | sed 's/^/    starting /'; \
+	  echo; echo "Private addresses are unchanged, so the inventory and kubeconfig still"; \
+	  echo "hold. etcd needs a minute or two to settle. Then:"; \
+	  echo "    make tunnel WORKSPACE=$(WORKSPACE)    # the old tunnel died with the nodes"; \
+	  echo "    kubectl get nodes"
+
+.PHONY: pause-hard
+pause-hard: ## Also delete the NAT gateway and load balancer (~$49/mo more)
+	@echo "This DELETES the NAT gateway, the load balancer and its target group."
+	@echo "Terraform recreates them on the next 'make apply' — but the load"
+	@echo "balancer comes back with a DIFFERENT DNS name."
+	@echo
+	@read -p "Type the workspace name to confirm: " c; \
+	  if [[ "$$c" != "$(WORKSPACE)" ]]; then echo "aborted"; exit 1; fi
+	$(call tf,destroy -var-file=$(VARS) -auto-approve \
+	  -target=module.loadbalancer -target=module.network.aws_nat_gateway.main)
+	@echo
+	@echo "Bring it all back with: make apply WORKSPACE=$(WORKSPACE)"
+
 .PHONY: cluster-down
 cluster-down: ## Delete what Kubernetes created in AWS — run this BEFORE destroy
 	@echo "Deleting LoadBalancer services and PersistentVolumeClaims in every namespace."
@@ -497,6 +561,11 @@ ingress: ## Install the ingress controller the ALB forwards to
 	@echo
 	@echo "Targets take about 30s to pass their first health check."
 	@echo "Then: make url WORKSPACE=$(WORKSPACE)"
+
+.PHONY: env-apply
+env-apply: ## Push helm/env/<ws>.env into the cluster as the app-env Secret
+	$(need_cluster)
+	@scripts/env-apply.sh $(WORKSPACE) $(HELM_NS)
 
 .PHONY: ecr-auth
 ecr-auth: ## Give the cluster a pull secret for ECR, and a CronJob to refresh it

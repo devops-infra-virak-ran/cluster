@@ -16,6 +16,14 @@
 #
 # A service listed here but not in the catalogue deploys nothing — `make
 # services` flags it. Add it to helm/values/<group>/services.yaml first.
+#
+# Application variables are NOT here — this file is in git. They live in
+# helm/env/dev.env, which is not, and reach the pods as the `app-env` Secret:
+#
+#   cp helm/env/dev.env.example helm/env/dev.env   fill it in
+#   make env-apply WORKSPACE=dev                   push it to the cluster
+#
+# A service reads them by listing the Secret in envFrom, below.
 
 groups:
   api-service:
@@ -23,10 +31,14 @@ groups:
       auth-api:
         image: { tag: "v2.0.0" }
         replicas: 1
+        envFrom:
+          - secretRef: { name: app-env }
 
       core-api:
         image: { tag: "v1.0.2" }
         replicas: 1
+        envFrom:
+          - secretRef: { name: app-env }
 
   web-service:
     services:
