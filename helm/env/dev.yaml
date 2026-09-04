@@ -26,15 +26,25 @@
 # A service reads them by listing the Secret in envFrom, below.
 
 groups:
+  # Both APIs are off in dev. `enabled: false` is what removes them — commenting
+  # the blocks out does not, because the catalogue in
+  # helm/values/api-service/services.yaml is what declares they exist. Without
+  # an override here they would still deploy, on the chart's default tag
+  # "latest", which is not in ECR.
+  #
+  # The settings each one needs when it comes back are kept below, so switching
+  # it on is a one-word edit.
   api-service:
     services:
       auth-api:
-        image: { tag: "v2.0.0" }
+        enabled: true
+        image: { tag: "prod.v3.0.4" }
         replicas: 1
         envFrom:
           - secretRef: { name: app-env }
 
       core-api:
+        enabled: false
         image: { tag: "v1.0.2" }
         replicas: 1
         envFrom:
@@ -43,5 +53,5 @@ groups:
   web-service:
     services:
       client-side:
-        image: { tag: "v1.0.0" }
+        image: { tag: "prod.v1.0.7" }
         replicas: 1

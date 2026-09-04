@@ -19,7 +19,6 @@
 
 groups:
   api-service:
-
     # ─── Defaults for every API ──────────────────────────────────────────────
     defaults:
       # With a routePrefix set, a service that does not name a route gets
@@ -36,11 +35,18 @@ groups:
 
     # ─── The services ────────────────────────────────────────────────────────
     services:
-
-      # Issues and validates tokens. Everything is convention: the image is
-      # auth-api and the route is /api/auth, both from the name. Its tag and
-      # replica count come from helm/env/<workspace>.yaml.
+      # Issues and validates tokens. Its tag and replica count come from
+      # helm/env/<workspace>.yaml.
       auth-api:
+        # Named explicitly, because convention would make this /api/auth-api —
+        # the route is <routePrefix>/<service name>. The service is addressed
+        # as /api/auth, which is also what the frontend's NUXT_PUBLIC_API_BASE
+        # of /api resolves against.
+        #
+        # The group's `rewrite: /` strips this prefix before the request
+        # reaches the app, so /api/auth/health arrives as /health — the same
+        # path the readiness and liveness probes use.
+        route: /api/auth
         env:
           CORS_ORIGIN: "*"
 
