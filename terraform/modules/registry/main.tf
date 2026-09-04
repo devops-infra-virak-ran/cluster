@@ -32,6 +32,23 @@ resource "aws_ecr_repository" "this" {
   }
 
   tags = merge(local.common_tags, { Name = "${var.repository_prefix}/${each.value}" })
+
+  # The cluster is disposable; the images are not. Everything else here can be
+  # rebuilt from this repository, but a deleted ECR repository takes every
+  # image tag with it — including the ones a running prod environment would
+  # need to roll back to.
+  #
+  # This makes a plain `terraform destroy` FAIL rather than skip: Terraform
+  # refuses the whole plan when it would destroy a protected resource. To tear
+  # an environment down and keep the images, exclude this module:
+  #
+  #   terraform destroy -var-file=env/dev.tfvars -exclude=module.registry
+  #
+  # To genuinely delete the repositories, delete this lifecycle block first —
+  # that deliberate edit is the point of it.
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
 # ─── Lifecycle policy ────────────────────────────────────────────────────────

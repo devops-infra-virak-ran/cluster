@@ -224,9 +224,19 @@ apply: ## Apply the plan you just reviewed (asks before changing anything)
 apply-plan: ## Apply exactly the saved tfplan from `make plan` — no second prompt, no drift
 	$(call tf,apply tfplan)
 
+# The repositories carry lifecycle.prevent_destroy, which is an assertion and not
+# a filter: a plain `terraform destroy` does not skip them, it refuses the whole
+# plan with "Instance cannot be destroyed". The scope has to be narrowed when the
+# plan is built, and this Terraform has -target but no -exclude — so the list
+# below is every top-level address in state except module.registry.
+#
+# Derived from state rather than written out here, so adding a module does not
+# silently leave it running after a destroy that claimed to remove everything.
 .PHONY: destroy
-destroy: ## Tear the whole workspace down. Costs stop when this finishes.
-	@echo "This destroys everything in workspace '$(WORKSPACE)' that Terraform created."
+destroy: ## Tear the workspace down, keeping ECR. Costs stop when this finishes.
+	@echo "This destroys everything in workspace '$(WORKSPACE)' that Terraform created,"
+	@echo "EXCEPT module.registry — the ECR repositories and their images survive, so"
+	@echo "a rebuild does not lose image history. (ECR storage still bills, in cents.)"
 	@echo
 	@echo "It does NOT destroy what Kubernetes created: ELBs from Service"
 	@echo "type=LoadBalancer, EBS volumes from PersistentVolumeClaims. Those are"
@@ -235,7 +245,18 @@ destroy: ## Tear the whole workspace down. Costs stop when this finishes.
 	@echo
 	@read -p "Type the workspace name to confirm: " c; \
 	  if [[ "$$c" != "$(WORKSPACE)" ]]; then echo "aborted"; exit 1; fi
-	$(call tf,destroy -var-file=$(VARS))
+	@test -f "$(TF_DIR)/$(VARS)" || { echo "error: no $(VARS)"; exit 1; }
+	@cd $(TF_DIR) && terraform workspace select -or-create $(WORKSPACE) >/dev/null
+	@cd $(TF_DIR) && targets=$$(terraform state list \
+	  | sed 's/\[.*\]//' \
+	  | awk -F. '{ if ($$1 == "module") print "module."$$2; else print $$1"."$$2 }' \
+	  | sort -u \
+	  | grep -v '^data\.' \
+	  | grep -v '^module\.registry$$' \
+	  | sed 's/^/-target=/' | tr '\n' ' '); \
+	  test -n "$$targets" || { echo "nothing in state for workspace '$(WORKSPACE)'"; exit 0; }; \
+	  echo "keeping module.registry (ECR); destroying: $$targets"; \
+	  terraform destroy -var-file=$(VARS) $$targets
 
 .PHONY: output
 output: ## Print this workspace's outputs
