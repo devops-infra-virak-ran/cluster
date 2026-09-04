@@ -47,6 +47,19 @@ groups:
         # reaches the app, so /api/auth/health arrives as /health — the same
         # path the readiness and liveness probes use.
         route: /api/auth
+
+        # No rewrite, unlike the group default. That default exists because an
+        # API is normally mounted under a prefix while serving from its own
+        # root, so the prefix has to come off. This one does not: its
+        # controller is @Controller("api/auth"), so it serves the full
+        # /api/auth/... path itself.
+        #
+        # With the group's `rewrite: /` in effect, /api/auth/register arrived
+        # at the app as /register and every endpoint 404'd. Setting this to
+        # null drops the rewrite-target annotation entirely and makes the path
+        # a plain Prefix match, forwarded unchanged.
+        rewrite: null
+
         env:
           CORS_ORIGIN: "*"
 
