@@ -38,8 +38,10 @@ groups:
     services:
       auth-api:
         enabled: true
-        image: { tag: "prod.v3.0.4" }
+        image: { tag: "prod.v3.0.5" }
         replicas: 1
+        route: /api/auth
+        rewrite: null
         envFrom:
           - secretRef: { name: app-env }
 

@@ -67,6 +67,10 @@ Once the cluster is up, deploying a change is the last step alone:
 make services    WORKSPACE=dev   # what is in the catalogue, and at which tag
 make helm-diff   WORKSPACE=dev   # what would change
 make helm-deploy WORKSPACE=dev
+
+make env-apply WORKSPACE=dev
+make helm-deploy WORKSPACE=dev
+
 ```
 
 This directory builds the machines, the network around them, the cluster on
