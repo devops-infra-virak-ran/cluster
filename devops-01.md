@@ -38,19 +38,19 @@ make destroy WORKSPACE=dev
 
 Each command can also be run individually if you prefer to monitor the process step by step.
 
-| # | Command | Time | Description |
-|---|---|---|---|
-| 1 | `make myip` | — | Verifies that your IP address is allowlisted |
-| 2 | `make apply` | 5–8 min | Creates the VPC, bastion, nodes, ECR repositories, and ALB |
-| 3 | `make kubespray-pull` | 1–3 min | Pulls the pinned Kubespray image |
-| 4 | `make kubespray-ping` | — | Verifies Ansible connectivity to every node through the bastion |
-| 5 | `make kubespray-deploy` | 20–40 min | Deploys Kubernetes |
-| 6 | `make tunnel` | — | Creates a kubeconfig and SSH tunnel to the API server |
-| 7 | `make storage` | ~1 min | Installs the EBS CSI driver and configures gp3 as the default StorageClass |
-| 8 | `make ingress` | 1–2 min | Installs ingress-nginx pinned to the NodePort monitored by the ALB |
-| 9 | `make ecr-auth` | — | Creates the ECR pull secret and refresh CronJob |
-| 10 | `make helm-deploy` | 1–2 min | Deploys all services in the catalogue |
-| 11 | `make url` | — | Displays the URL for each service |
+| #   | Command                 | Time      | Description                                                                |
+| --- | ----------------------- | --------- | -------------------------------------------------------------------------- |
+| 1   | `make myip`             | —         | Verifies that your IP address is allowlisted                               |
+| 2   | `make apply`            | 5–8 min   | Creates the VPC, bastion, nodes, ECR repositories, and ALB                 |
+| 3   | `make kubespray-pull`   | 1–3 min   | Pulls the pinned Kubespray image                                           |
+| 4   | `make kubespray-ping`   | —         | Verifies Ansible connectivity to every node through the bastion            |
+| 5   | `make kubespray-deploy` | 20–40 min | Deploys Kubernetes                                                         |
+| 6   | `make tunnel`           | —         | Creates a kubeconfig and SSH tunnel to the API server                      |
+| 7   | `make storage`          | ~1 min    | Installs the EBS CSI driver and configures gp3 as the default StorageClass |
+| 8   | `make ingress`          | 1–2 min   | Installs ingress-nginx pinned to the NodePort monitored by the ALB         |
+| 9   | `make ecr-auth`         | —         | Creates the ECR pull secret and refresh CronJob                            |
+| 10  | `make helm-deploy`      | 1–2 min   | Deploys all services in the catalogue                                      |
+| 11  | `make url`              | —         | Displays the URL for each service                                          |
 
 Three parts of this order are important:
 
@@ -66,6 +66,7 @@ Once the cluster is running, deploying application changes only requires the fin
 
 ```bash
 make services    WORKSPACE=dev   # Show services in the catalogue and their tags
+make env-apply WORKSPACE=dev
 make helm-diff   WORKSPACE=dev   # Preview changes
 make helm-deploy WORKSPACE=dev   # Deploy changes
 ```
@@ -208,13 +209,13 @@ It runs formatting and validation without contacting AWS, making it useful for c
 
 ### Other Useful Commands
 
-| Command | Purpose |
-|---|---|
-| `make current WORKSPACE=prod` | Shows the selected workspace and configuration values |
-| `make workspaces` | Lists all workspaces and their current state |
-| `make cost WORKSPACE=prod` | Displays the estimated monthly cost from the environment configuration |
-| `make graph` | Generates a dependency graph as SVG (requires Graphviz) |
-| `make refresh WORKSPACE=dev` | Refreshes Terraform state without changing infrastructure |
+| Command                       | Purpose                                                                |
+| ----------------------------- | ---------------------------------------------------------------------- |
+| `make current WORKSPACE=prod` | Shows the selected workspace and configuration values                  |
+| `make workspaces`             | Lists all workspaces and their current state                           |
+| `make cost WORKSPACE=prod`    | Displays the estimated monthly cost from the environment configuration |
+| `make graph`                  | Generates a dependency graph as SVG (requires Graphviz)                |
+| `make refresh WORKSPACE=dev`  | Refreshes Terraform state without changing infrastructure              |
 
 ### Plan Then Apply
 
@@ -237,11 +238,11 @@ A saved plan applies the exact changes that were reviewed. Running a new plan be
 
 Infrastructure costs vary by environment:
 
-| Resource | Dev | Staging | Prod |
-|---|---:|---:|---:|
-| NAT Gateways | 1 | 2 | 3 |
-| Control-plane Nodes | 1 | 1 | 3 |
-| Worker Nodes | 2 | 2 | 3 |
+| Resource                   |      Dev |  Staging |      Prod |
+| -------------------------- | -------: | -------: | --------: |
+| NAT Gateways               |        1 |        2 |         3 |
+| Control-plane Nodes        |        1 |        1 |         3 |
+| Worker Nodes               |        2 |        2 |         3 |
 | **Estimated Monthly Cost** | **~$35** | **~$70** | **~$285** |
 
 ### NAT Gateways Are the Main Cost Driver

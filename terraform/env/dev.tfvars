@@ -34,7 +34,7 @@ enable_flow_logs   = false
 # A stale entry does not error: the security group drops the packets and SSH
 # hangs. 0.0.0.0/0 is rejected by the security module on purpose.
 
-ssh_allowed_cidrs       = ["117.20.116.40/32"]
+ssh_allowed_cidrs       = ["110.74.192.70/32"]
 apiserver_allowed_cidrs = []
 
 ssh_public_key_path  = "~/.ssh/id_ed25519.pub"

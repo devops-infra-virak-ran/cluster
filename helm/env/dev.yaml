@@ -46,9 +46,14 @@ groups:
           - secretRef: { name: app-env }
 
       core-api:
-        enabled: false
-        image: { tag: "v1.0.2" }
+        enabled: true
+        image: { tag: "prod.v2.0.2" }
         replicas: 1
+        route: null
+        routePrefix: null
+        probes:
+          path: /api/health
+          readyPath: /api/health
         envFrom:
           - secretRef: { name: app-env }
 
@@ -57,3 +62,5 @@ groups:
       client-side:
         image: { tag: "prod.v1.0.7" }
         replicas: 1
+        envFrom:
+          - secretRef: { name: app-env }

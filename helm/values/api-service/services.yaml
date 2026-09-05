@@ -51,4 +51,5 @@ groups:
 
         env:
           # The Service name, not the ALB: this call never leaves the cluster.
-          AUTH_URL: http://auth-api:80
+          AUTH_SERVICE_URL: http://auth-api:80
+          CORS_ORIGIN: "*"
