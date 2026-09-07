@@ -1,0 +1,12 @@
+# Platform facts are NOT committed. They name a live environment — account id,
+# load balancer, bastion and node addresses — and this repository is public.
+#
+# Get them from whoever provisions the machines. In the infrastructure repo:
+#
+#   make platform-env WORKSPACE=dev > platform/dev.env
+#
+# platform/<ws>.env.example lists every key the resolver looks for.
+platform/*.env
+
+# Rendered by `make graph`.
+graph.svg

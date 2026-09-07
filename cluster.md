@@ -1,4 +1,4 @@
-# devops-01
+# cluster
 
 AWS infrastructure and a Kubernetes cluster built on top of it, managed from a single Terraform root with one environment per workspace.
 
@@ -88,10 +88,10 @@ make plan WORKSPACE=dev
 
                  │
                  ├──→ State:
-                 │    terraform/terraform.tfstate.d/dev/terraform.tfstate
+                 │    ../terraform/terraform.tfstate.d/dev/terraform.tfstate
                  │
                  └──→ Variables:
-                      terraform/env/dev.tfvars
+                      ../terraform/env/dev.tfvars
 ```
 
 `dev`, `staging`, and `prod` use the **same Terraform code** with different configuration values.
@@ -126,7 +126,12 @@ The default Terraform workspace is intentionally unusable because it is easy to 
 Makefile
     All available commands
 
-terraform/
+../terraform/
+    Separate repo, beside this one. Override with TF_DIR=/path/to/terraform
+
+    Makefile
+        The Terraform targets on their own
+
     main.tf
         Connects the four Terraform modules
 
@@ -224,7 +229,7 @@ It runs formatting and validation without contacting AWS, making it useful for c
 If you want to apply exactly the plan you previously reviewed:
 
 ```bash
-make plan WORKSPACE=dev         # Writes terraform/tfplan
+make plan WORKSPACE=dev         # Writes ../terraform/tfplan
 make apply-plan WORKSPACE=dev   # Applies the saved plan
 ```
 

@@ -1,78 +1,29 @@
-# devops-01 — AWS infrastructure, one environment per Terraform workspace.
-#
-#   make plan    WORKSPACE=dev
-#   make apply   WORKSPACE=dev
-#   make destroy WORKSPACE=dev
-#
-# WORKSPACE picks two things at once, and they always agree:
-#
-#   the state file   terraform/terraform.tfstate.d/<workspace>/terraform.tfstate
-#   the variables    terraform/env/<workspace>.tfvars
-#
-# So `dev` and `prod` are the same code with different sizes, and neither can
-# see the other's state. Changing dev cannot touch prod.
-
 SHELL := /bin/bash
 .SHELLFLAGS := -eu -o pipefail -c
 .DEFAULT_GOAL := help
 
-TF_DIR    := $(CURDIR)/terraform
 WORKSPACE ?= dev
-VARS      := env/$(WORKSPACE).tfvars
 
-# Read from the tfvars so it cannot disagree with what Terraform used. Only the
-# aws CLI calls in this file need it; Terraform reads the variable itself.
-REGION    := $(shell sed -n 's/^[[:space:]]*region[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' $(CURDIR)/terraform/env/$(WORKSPACE).tfvars 2>/dev/null | head -1)
+PLATFORM  := scripts/platform.sh $(WORKSPACE)
+REGION    := $(shell scripts/platform.sh $(WORKSPACE) region)
 
-# Every kubectl in this file talks to THIS workspace's cluster, and nothing
-# else. Exported, because `kubectl` on the host would otherwise read
-# ~/.kube/config — whatever cluster that happens to point at, from whenever.
-#
-# That is not a theoretical mix-up. Every kubeconfig this repository writes
-# uses https://127.0.0.1:6443, because they all reach the apiserver through an
-# SSH tunnel on the same local port. So a stale default config does not fail to
-# connect; it connects to whichever tunnel is open, with the wrong cluster's
-# credentials, and fails with an x509 error that reads like a broken cluster
-# rather than the wrong file.
-#
-# Set here rather than per-recipe so scripts/ inherit it too.
 export KUBECONFIG := $(HOME)/.kube/config-$(WORKSPACE)
 
-# Kubespray runs from its official container image, so the only thing to
-# install is Docker. The tag pins Ansible, Python and the Kubespray release
-# together, which is why a laptop and a CI agent run identical code.
-#
-# This tag and kube_version in kubespray/group_vars/k8s_cluster/k8s-cluster.yml
-# are a pair. v2.31.0 supports Kubernetes 1.33.0 to 1.35.4; move both or
-# neither.
 KUBESPRAY_VERSION ?= v2.31.0
 KUBESPRAY         := $(CURDIR)/kubespray/run.sh $(WORKSPACE)
 INVENTORY         := $(CURDIR)/kubespray/inventory/$(WORKSPACE)/inventory.ini
 
-# Pinned upstream, not the copy Kubespray bundles — see kubespray/group_vars/
-# all/aws.yml for why.
 EBS_CSI_VERSION   ?= v1.64.0
 
 # ─── Helm ────────────────────────────────────────────────────────────────────
-# Helm runs from a container for the same reason Kubespray does: the version is
-# pinned by a tag, and nothing has to be installed on the host.
-#
-# --network host is what lets it reach the apiserver through the SSH tunnel on
-# 127.0.0.1 — without it, "localhost" inside the container is the container.
 HELM_VERSION ?= 3.16.3
 INGRESS_NGINX_VERSION ?= 4.14.5
 HELM_RELEASE ?= apps
 HELM_NS      ?= apps
 CHART        := $(CURDIR)/helm/services
 
-# The catalogue. Every file under helm/values/<group>/ becomes a -f, sorted so
-# the order is reproducible. One file per group today; the glob means a group
-# can be split across several files, or a new group added, with no change here.
 VALUE_FILES := $(sort $(wildcard $(CURDIR)/helm/values/*/*.yaml))
 
-# What differs about this environment: image tags and replica counts. It goes
-# LAST so it wins — the catalogue says a service exists, this says which build
-# of it runs here and how many.
 ENV_VALUES  := $(CURDIR)/helm/env/$(WORKSPACE).yaml
 VALUE_ARGS  := $(foreach f,$(VALUE_FILES),-f /work/helm/values/$(notdir $(patsubst %/,%,$(dir $(f))))/$(notdir $(f))) \
                -f /work/helm/env/$(WORKSPACE).yaml
@@ -85,52 +36,21 @@ define need_env_values
 	  exit 1; }
 endef
 
-# The registry every image name is prefixed with. Read from Terraform rather
-# than written into a values file: it contains the account id and region, which
-# are properties of the environment you actually applied into, not a choice
-# anyone makes in Helm. Nothing to keep in sync and no account id in git.
-#
-# TF_WORKSPACE, not `workspace select`: this must read the state for the
-# workspace being deployed, whichever one happens to be selected right now.
-TF_OUT := TF_WORKSPACE=$(WORKSPACE) terraform -chdir=$(TF_DIR) output -raw
-
-# There is no registry until `make apply`, and most of the time an environment
-# is destroyed — that is the point of destroying it. Rendering and linting the
-# chart has nothing to do with AWS, so they fall back to a placeholder rather
-# than refusing to run.
-#
-# A .invalid host (RFC 2606) can never resolve, so a rendered manifest that
-# escaped into a cluster fails immediately and visibly instead of quietly
-# pulling some unrelated image from Docker Hub.
 REGISTRY_PLACEHOLDER := unresolved-registry.invalid
 INGRESS_PLACEHOLDER  := http://unresolved-loadbalancer.invalid
 
-# Both facts Helm needs from AWS, resolved in the shell at recipe time so make
-# does not run Terraform just to parse this file.
-REGISTRY  = --set global.imageRegistry="$$(r="$$($(TF_OUT) ecr_image_prefix 2>/dev/null)"; echo "$${r:-$(REGISTRY_PLACEHOLDER)}")"
-INGRESS   = --set global.ingress.url="$$(r="$$($(TF_OUT) alb_url 2>/dev/null)"; echo "$${r:-$(INGRESS_PLACEHOLDER)}")"
+REGISTRY  = --set global.imageRegistry="$$(r="$$($(PLATFORM) ecr_image_prefix 2>/dev/null)"; echo "$${r:-$(REGISTRY_PLACEHOLDER)}")"
+INGRESS   = --set global.ingress.url="$$(r="$$($(PLATFORM) alb_url 2>/dev/null)"; echo "$${r:-$(INGRESS_PLACEHOLDER)}")"
 HELM_SETS = $(REGISTRY) $(INGRESS)
 
-# For helm-lint and helm-render: say the values are not the real ones, on
-# stderr, so `make helm-render > manifest.yaml` still produces clean YAML.
 define warn_offline
-	@r="$$($(TF_OUT) ecr_image_prefix 2>/dev/null)$$($(TF_OUT) alb_url 2>/dev/null)"; test -n "$$r" || { \
+	@r="$$($(PLATFORM) ecr_image_prefix 2>/dev/null)$$($(PLATFORM) alb_url 2>/dev/null)"; test -n "$$r" || { \
 	  echo "note: workspace '$(WORKSPACE)' is not applied — images render as" >&2; \
 	  echo "      $(REGISTRY_PLACEHOLDER)/<service>:<tag> and the URL as" >&2; \
-	  echo "      $(INGRESS_PLACEHOLDER). Fine for lint and render; run" >&2; \
-	  echo "      'make apply WORKSPACE=$(WORKSPACE)' for the real ones." >&2; }
+	  echo "      $(INGRESS_PLACEHOLDER). Fine for lint and render; fill in" >&2; \
+	  echo "      platform/$(WORKSPACE).env for the real ones." >&2; }
 endef
 
-# For `make url` and `make ingress`, which need the load balancer specifically.
-# The tunnel is a process, not a setting: it dies with the terminal that
-# started it, with the laptop sleeping, or with the bastion's IP changing. Its
-# absence surfaces as whatever the command happened to be doing at the time —
-# `make storage` reports "failed to download openapi", which reads like a
-# broken cluster and says nothing about a tunnel.
-# Resolve every image against ECR before applying anything. A tag that was
-# never pushed is otherwise found by the kubelet, and surfaces as helm's
-# "context deadline exceeded" five minutes later — an error about waiting,
-# which names neither the image nor the reason.
 define need_images
 	@$(HELM) template $(HELM_RELEASE) /work/helm/services \
 	  --namespace $(HELM_NS) $(VALUE_ARGS) $(HELM_SETS) 2>/dev/null \
@@ -156,20 +76,18 @@ define need_cluster
 endef
 
 define need_alb
-	@r="$$($(TF_OUT) alb_url 2>/dev/null)"; test -n "$$r" || { \
-	  echo "error: workspace '$(WORKSPACE)' has no load balancer yet."; \
-	  echo "       Terraform creates it, and the outputs naming it:"; \
-	  echo "         make apply WORKSPACE=$(WORKSPACE)"; \
+	@r="$$($(PLATFORM) alb_url 2>/dev/null)"; test -n "$$r" || { \
+	  echo "error: no alb_url for workspace '$(WORKSPACE)'."; \
+	  echo "       Ask the infrastructure team for it, then set ALB_URL in"; \
+	  echo "         platform/$(WORKSPACE).env"; \
 	  exit 1; }
 endef
 
-# For helm-diff and helm-deploy, which touch a cluster. Deploying the
-# placeholder would leave every pod in ImagePullBackOff, so this refuses.
 define need_registry
-	@r="$$($(TF_OUT) ecr_image_prefix 2>/dev/null)"; test -n "$$r" || { \
-	  echo "error: workspace '$(WORKSPACE)' has no ECR registry yet, so there are"; \
-	  echo "       no images to deploy. Terraform creates the repositories:"; \
-	  echo "         make apply WORKSPACE=$(WORKSPACE)"; \
+	@r="$$($(PLATFORM) ecr_image_prefix 2>/dev/null)"; test -n "$$r" || { \
+	  echo "error: no ecr_image_prefix for workspace '$(WORKSPACE)', so there is"; \
+	  echo "       nowhere to pull images from. Set ECR_IMAGE_PREFIX in"; \
+	  echo "         platform/$(WORKSPACE).env"; \
 	  exit 1; }
 endef
 
@@ -177,17 +95,6 @@ HELM = docker run --rm --network host \
          -v "$(CURDIR):/work" -v "$(HOME)/.kube:/root/.kube:ro" \
          -e KUBECONFIG=/root/.kube/config-$(WORKSPACE) \
          -w /work alpine/helm:$(HELM_VERSION)
-
-# Every workspace-aware target starts here. `-or-create` means the first
-# `make plan WORKSPACE=staging` just works instead of failing on a workspace
-# that does not exist yet.
-define tf
-	@test -f "$(TF_DIR)/$(VARS)" || { \
-	  echo "error: no $(VARS) — environments are: $$(ls $(TF_DIR)/env/*.tfvars | xargs -n1 basename | sed 's/.tfvars//' | tr '\n' ' ')"; \
-	  exit 1; }
-	@cd $(TF_DIR) && terraform workspace select -or-create $(WORKSPACE) >/dev/null
-	cd $(TF_DIR) && terraform $(1)
-endef
 
 # ─── Help ────────────────────────────────────────────────────────────────────
 
@@ -203,170 +110,39 @@ help: ## Show this help
 	    if (pending != "") { printf "\n\033[1m%s\033[0m\n", pending; pending = "" } \
 	    printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
 	@printf '\nWORKSPACE is \033[36m%s\033[0m. Available: ' "$(WORKSPACE)"
-	@ls $(TF_DIR)/env/*.tfvars 2>/dev/null | xargs -n1 basename | sed 's/.tfvars//' | tr '\n' ' '
+	@ls $(CURDIR)/platform/*.env 2>/dev/null | grep -v '\.local\.env$$' | xargs -n1 basename | sed 's/\.env$$//' | tr '\n' ' '
 	@printf '\n\n'
 
-# ─── Core loop ───────────────────────────────────────────────────────────────
+# ─── Platform ────────────────────────────────────────────────────────────────
 
-.PHONY: init
-init: ## Download providers and set up the backend (run once, and after adding a provider)
-	cd $(TF_DIR) && terraform init -input=false
+PLATFORM_KEYS := region cluster_name ecr_image_prefix ecr_registry_url \
+                 alb_url alb_dns_name \
+                 ingress_nodeport bastion_ip control_plane_ip node_ssh_user \
+                 ssh_private_key_path
 
-.PHONY: plan
-plan: ## Show what would change: make plan WORKSPACE=dev
-	$(call tf,plan -var-file=$(VARS) -out=tfplan)
-
-.PHONY: apply
-apply: ## Apply the plan you just reviewed (asks before changing anything)
-	$(call tf,apply -var-file=$(VARS))
-
-.PHONY: apply-plan
-apply-plan: ## Apply exactly the saved tfplan from `make plan` — no second prompt, no drift
-	$(call tf,apply tfplan)
-
-# The repositories carry lifecycle.prevent_destroy, which is an assertion and not
-# a filter: a plain `terraform destroy` does not skip them, it refuses the whole
-# plan with "Instance cannot be destroyed". The scope has to be narrowed when the
-# plan is built, and this Terraform has -target but no -exclude — so the list
-# below is every top-level address in state except module.registry.
-#
-# Derived from state rather than written out here, so adding a module does not
-# silently leave it running after a destroy that claimed to remove everything.
-.PHONY: destroy
-destroy: ## Tear the workspace down, keeping ECR. Costs stop when this finishes.
-	@echo "This destroys everything in workspace '$(WORKSPACE)' that Terraform created,"
-	@echo "EXCEPT module.registry — the ECR repositories and their images survive, so"
-	@echo "a rebuild does not lose image history. (ECR storage still bills, in cents.)"
-	@echo
-	@echo "It does NOT destroy what Kubernetes created: ELBs from Service"
-	@echo "type=LoadBalancer, EBS volumes from PersistentVolumeClaims. Those are"
-	@echo "not in Terraform state, they keep billing, and a leftover ELB holds an"
-	@echo "ENI that blocks the VPC from deleting. Run 'make cluster-down' first."
-	@echo
-	@read -p "Type the workspace name to confirm: " c; \
-	  if [[ "$$c" != "$(WORKSPACE)" ]]; then echo "aborted"; exit 1; fi
-	@test -f "$(TF_DIR)/$(VARS)" || { echo "error: no $(VARS)"; exit 1; }
-	@cd $(TF_DIR) && terraform workspace select -or-create $(WORKSPACE) >/dev/null
-	@cd $(TF_DIR) && targets=$$(terraform state list \
-	  | sed 's/\[.*\]//' \
-	  | awk -F. '{ if ($$1 == "module") print "module."$$2; else print $$1"."$$2 }' \
-	  | sort -u \
-	  | grep -v '^data\.' \
-	  | grep -v '^module\.registry$$' \
-	  | sed 's/^/-target=/' | tr '\n' ' '); \
-	  test -n "$$targets" || { echo "nothing in state for workspace '$(WORKSPACE)'"; exit 0; }; \
-	  echo "keeping module.registry (ECR); destroying: $$targets"; \
-	  terraform destroy -var-file=$(VARS) $$targets
-
-.PHONY: output
-output: ## Print this workspace's outputs
-	$(call tf,output)
-
-.PHONY: refresh
-refresh: ## Re-read reality into state, without changing anything
-	$(call tf,refresh -var-file=$(VARS))
-
-# ─── Workspaces ──────────────────────────────────────────────────────────────
-
-.PHONY: workspaces
-workspaces: ## List workspaces, which is selected, and whether each holds anything
-	@cd $(TF_DIR) && terraform workspace list -no-color | while IFS= read -r line; do \
-	  [[ -n "$${line// }" ]] || continue; \
-	  if [[ "$$line" == '*'* ]]; then mark='->'; else mark='  '; fi; \
-	  w=$$(echo "$$line" | tr -d '* '); \
-	  state="$(TF_DIR)/terraform.tfstate.d/$$w/terraform.tfstate"; \
-	  if [[ -s "$$state" ]]; then \
-	    held="$$(grep -c '"mode"' "$$state" 2>/dev/null || true) resources"; \
-	  else held='empty'; fi; \
-	  if [[ -f "$(TF_DIR)/env/$$w.tfvars" ]]; then env='';  else env='  (no env/'"$$w"'.tfvars — not usable)'; fi; \
-	  printf '%s %-10s %-14s%s\n' "$$mark" "$$w" "$$held" "$$env"; \
-	done
-
-.PHONY: current
-current: ## Show what WORKSPACE would build, selecting it first
-	@test -f "$(TF_DIR)/$(VARS)" || { echo "error: no $(VARS)"; exit 1; }
-	@cd $(TF_DIR) && terraform workspace select -or-create $(WORKSPACE) >/dev/null
-	@cd $(TF_DIR) && printf 'workspace: %s\n' "$$(terraform workspace show)"
-	@printf 'varfile:   %s\n\n' "$(VARS)"
-	@grep -vE '^\s*(#|$$)' $(TF_DIR)/$(VARS) | sed 's/^/  /'
-
-# ─── Checks ──────────────────────────────────────────────────────────────────
-
-.PHONY: fmt
-fmt: ## Rewrite .tf files to canonical formatting
-	cd $(TF_DIR) && terraform fmt -recursive
-
-.PHONY: validate
-validate: ## Check the configuration is internally consistent (no AWS calls, no credentials)
-	cd $(TF_DIR) && terraform validate
-
-.PHONY: check
-check: fmt validate ## fmt + validate, the fast loop while editing
-
-.PHONY: graph
-graph: ## Write a dependency graph to graph.svg (needs graphviz)
-	cd $(TF_DIR) && terraform graph | dot -Tsvg > $(CURDIR)/graph.svg
-	@echo "wrote graph.svg"
-
-.PHONY: myip
-myip: ## Check whether your current public IP is in this workspace's SSH allowlist
-	@test -f "$(TF_DIR)/$(VARS)" || { echo "error: no $(VARS)"; exit 1; }
-	@ip=$$(curl -s --max-time 10 https://checkip.amazonaws.com | tr -d '[:space:]'); \
-	  test -n "$$ip" || { echo "error: could not reach checkip.amazonaws.com — are you online?"; exit 1; }; \
-	  allowed=$$(sed -n 's/^[[:space:]]*ssh_allowed_cidrs[[:space:]]*=[[:space:]]*//p' "$(TF_DIR)/$(VARS)" | head -1); \
-	  printf '  your IP now: %s\n  allowlisted: %s\n\n' "$$ip" "$$allowed"; \
-	  if [[ "$$allowed" == *"$$ip/32"* ]]; then \
-	    echo "  match — SSH to the bastion will work."; \
-	  else \
-	    echo "  NO MATCH. SSH will hang rather than fail: a security group drops"; \
-	    echo "  unmatched packets instead of refusing them, so Ansible waits for its"; \
-	    echo "  full timeout and then blames privilege escalation."; \
-	    echo; \
-	    echo "      make myip-set WORKSPACE=$(WORKSPACE)   # writes it to $(VARS)"; \
-	    echo "      make apply     WORKSPACE=$(WORKSPACE)   # one rule added, one removed"; \
-	    exit 1; \
-	  fi
-
-.PHONY: myip-set
-myip-set: ## Write your current public IP into this workspace's ssh_allowed_cidrs
-	@test -f "$(TF_DIR)/$(VARS)" || { echo "error: no $(VARS)"; exit 1; }
-	@ip=$$(curl -s --max-time 10 https://checkip.amazonaws.com | tr -d '[:space:]'); \
-	  test -n "$$ip" || { echo "error: could not reach checkip.amazonaws.com — are you online?"; exit 1; }; \
-	  line="ssh_allowed_cidrs       = [\"$$ip/32\"]"; \
-	  sed -i "s|^ssh_allowed_cidrs.*|$$line|" "$(TF_DIR)/$(VARS)"; \
-	  grep -n '^ssh_allowed_cidrs' "$(TF_DIR)/$(VARS)" | sed 's/^/  /'; \
-	  echo; \
-	  echo "  Nothing has changed in AWS yet. Apply it:"; \
-	  echo "      make apply WORKSPACE=$(WORKSPACE)"
-
-.PHONY: cost
-cost: ## What this workspace runs to per month, from the notes in its tfvars
-	@grep -E '^\s*#\s*(cost|~\$$)' $(TF_DIR)/$(VARS) | sed 's/^\s*#\s*/  /' || \
-	  echo "  no cost notes in $(VARS)"
-
+.PHONY: platform
+platform: ## Show this workspace's platform facts, and which are missing
+	@printf 'workspace: \033[36m%s\033[0m\n' "$(WORKSPACE)"
+	@printf '  shared  platform/%s.env         (committed)\n' "$(WORKSPACE)"
+	@printf '  local   platform/%s.local.env   (gitignored)\n\n' "$(WORKSPACE)"
+	@missing=0; for k in $(PLATFORM_KEYS); do \
+	  v="$$(scripts/platform.sh $(WORKSPACE) $$k)"; \
+	  o="$$(scripts/platform.sh $(WORKSPACE) $$k --origin)"; \
+	  if [[ -n "$$v" ]]; then printf '  %-22s %-8s %s\n' "$$k" "$$o" "$$v"; \
+	  else printf '  %-22s %-8s \033[31mMISSING\033[0m\n' "$$k" "-"; missing=1; fi; \
+	done; \
+	echo; \
+	if [[ $$missing -eq 1 ]]; then \
+	  echo "Set the missing ones in platform/$(WORKSPACE).env, or pass them per-run"; \
+	  echo "as uppercase environment variables (ALB_URL=..., SSH_KEY=...)."; \
+	  exit 1; \
+	else echo "All set."; fi
 
 # ─── Cluster ─────────────────────────────────────────────────────────────────
-# Terraform builds the machines; Kubespray turns them into Kubernetes. Every
-# target here carries WORKSPACE through to a per-workspace inventory, so
-# `make kubespray-deploy WORKSPACE=prod` cannot reach dev's nodes.
 
-# The whole thing, in order, from nothing to a URL that answers.
-#
-# Ordering that is not obvious:
-#
-#   tunnel, not kubeconfig   kubeconfig holds the tunnel in the foreground and
-#                            waits for Ctrl-C, which would stop the chain dead.
-#   ecr-auth before deploy   the pull secret has to exist when the first pod is
-#                            scheduled, or it lands in ImagePullBackOff and
-#                            helm-deploy --wait sits there until it times out.
-#   ingress before deploy    not required, but the ALB's targets only go
-#                            healthy once something answers on the NodePort,
-#                            so doing it first means `url` works immediately.
 .PHONY: up
-up: ## Everything: infrastructure, Kubernetes, ingress, services, URL (35-55 min)
-	@echo "Building $(WORKSPACE) from nothing. This takes 35-55 minutes."
-	@$(MAKE) --no-print-directory myip WORKSPACE=$(WORKSPACE)
-	@$(MAKE) --no-print-directory apply WORKSPACE=$(WORKSPACE)
+up: ## Everything: Kubernetes, ingress, services, URL (25-45 min)
+	@echo "Building $(WORKSPACE) on existing servers. This takes 25-45 minutes."
 	@$(MAKE) --no-print-directory kubespray-pull WORKSPACE=$(WORKSPACE)
 	@$(MAKE) --no-print-directory kubespray-ping WORKSPACE=$(WORKSPACE)
 	@$(MAKE) --no-print-directory kubespray-deploy WORKSPACE=$(WORKSPACE)
@@ -380,7 +156,7 @@ up: ## Everything: infrastructure, Kubernetes, ingress, services, URL (35-55 min
 	@$(MAKE) --no-print-directory url WORKSPACE=$(WORKSPACE)
 
 .PHONY: cluster-up
-cluster-up: apply kubespray-pull kubespray-ping kubespray-deploy ## Infrastructure and Kubernetes only — `up` also deploys the services
+cluster-up: kubespray-pull kubespray-ping kubespray-deploy ## Kubernetes only — `up` also deploys the services
 	@echo
 	@echo "Cluster is up — but nothing is running on it yet. Next:"
 	@echo "    make kubeconfig  WORKSPACE=$(WORKSPACE)   # kubectl access, through the bastion"
@@ -391,11 +167,6 @@ cluster-up: apply kubespray-pull kubespray-ping kubespray-deploy ## Infrastructu
 	@echo
 	@echo "  helm-deploy will land in ImagePullBackOff until ECR auth exists —"
 	@echo "  see global.imagePullSecrets in helm/services/values.yaml."
-
-.PHONY: inventory
-inventory: ## Rewrite this workspace's Kubespray inventory from live state
-	$(call tf,apply -var-file=$(VARS) -target=local_file.inventory -auto-approve)
-	@echo "wrote $(INVENTORY)"
 
 .PHONY: kubespray-pull
 kubespray-pull: ## Pull the pinned Kubespray image (~135 MB)
@@ -410,7 +181,7 @@ kubespray-deploy: ## Install Kubernetes on this workspace's nodes (20-40 minutes
 	$(KUBESPRAY) cluster.yml
 
 .PHONY: kubespray-scale
-kubespray-scale: ## Add NODES=<name,name> to the cluster (raise the count, apply, then this)
+kubespray-scale: ## Add NODES=<name,name> to the cluster (after the servers exist)
 	@test -n "$(NODES)" || { echo "usage: make kubespray-scale NODES=worker3 WORKSPACE=$(WORKSPACE)"; exit 1; }
 	$(KUBESPRAY) scale.yml --limit=$(NODES)
 
@@ -453,21 +224,11 @@ storage: ## Install the EBS CSI driver and make gp3 the default StorageClass
 	kubectl apply -f kubespray/storage/gp3-storageclass.yaml
 
 # ─── Pausing ─────────────────────────────────────────────────────────────────
-# Stopping the nodes keeps everything that is slow or annoying to rebuild — the
-# disks, the cluster's etcd data, the VPC, the ECR images — and stops paying
-# for the compute, which is most of the bill.
-#
-# It works because a stopped instance in a VPC keeps its PRIVATE ip. The
-# Kubespray inventory and every kubeconfig address nodes by private ip, so
-# they are all still correct when it starts again. The bastion keeps its public
-# address too, because that is an Elastic IP rather than an ephemeral one.
-#
-# What it does NOT stop: EBS volumes, the NAT gateway, the load balancer, and
-# public IPv4 addresses. Those bill whether or not anything is running, and the
-# only way to stop them is to delete them — `make destroy`, or `make pause-hard`.
+
+MANAGED_BY ?= terraform
 
 define instance_filter
---filters Name=tag:Environment,Values=$(WORKSPACE) Name=tag:ManagedBy,Values=terraform
+--filters Name=tag:Environment,Values=$(WORKSPACE) Name=tag:ManagedBy,Values=$(MANAGED_BY)
 endef
 
 .PHONY: pause
@@ -498,19 +259,6 @@ resume: ## Start the nodes again after `make pause`
 	  echo "    make tunnel WORKSPACE=$(WORKSPACE)    # the old tunnel died with the nodes"; \
 	  echo "    kubectl get nodes"
 
-.PHONY: pause-hard
-pause-hard: ## Also delete the NAT gateway and load balancer (~$49/mo more)
-	@echo "This DELETES the NAT gateway, the load balancer and its target group."
-	@echo "Terraform recreates them on the next 'make apply' — but the load"
-	@echo "balancer comes back with a DIFFERENT DNS name."
-	@echo
-	@read -p "Type the workspace name to confirm: " c; \
-	  if [[ "$$c" != "$(WORKSPACE)" ]]; then echo "aborted"; exit 1; fi
-	$(call tf,destroy -var-file=$(VARS) -auto-approve \
-	  -target=module.loadbalancer -target=module.network.aws_nat_gateway.main)
-	@echo
-	@echo "Bring it all back with: make apply WORKSPACE=$(WORKSPACE)"
-
 .PHONY: cluster-down
 cluster-down: ## Delete what Kubernetes created in AWS — run this BEFORE destroy
 	@echo "Deleting LoadBalancer services and PersistentVolumeClaims in every namespace."
@@ -522,24 +270,6 @@ cluster-down: ## Delete what Kubernetes created in AWS — run this BEFORE destr
 	@echo "Wait for the volumes to disappear, then: make destroy WORKSPACE=$(WORKSPACE)"
 
 # ─── Services ────────────────────────────────────────────────────────────────
-# Getting from nothing to a URL:
-#
-#   make apply        the cluster, the ECR repositories and the ALB
-#   make kubespray-deploy   Kubernetes on the nodes
-#   make kubeconfig         a kubectl that can reach it
-#   make ingress            the controller the ALB forwards to
-#   make helm-deploy        the services
-#   make url                where they answer
-#
-# One Helm release holds every service, and Helm owns the whole definition:
-#
-#   helm/values/<group>/services.yaml   which services exist, in every env
-#   helm/env/<workspace>.yaml           image tag and replicas, per env
-#
-# Add a block to add a service, delete one to remove it, and `helm upgrade`
-# reconciles the difference. Terraform reads the service names out of the
-# first to create their ECR repositories, so a new service also needs a
-# `make apply` before its images have anywhere to go.
 
 .PHONY: services
 services: ## List the catalogue for this workspace, and which files override it
@@ -562,22 +292,14 @@ svc-rm: ## Remove a service: make svc-rm NAME=payments-api
 ingress: ## Install the ingress controller the ALB forwards to
 	$(need_cluster)
 	$(need_alb)
-	@# Pinned to the NodePort Terraform built the target group around. If these
-	@# two numbers ever disagree the ALB health check fails on every target and
-	@# the URL returns 503 with nothing obviously wrong in the cluster.
-	@#
-	@# publishService is off because there is no cloud controller manager to
-	@# populate a LoadBalancer Service; publish-status-address puts the ALB's
-	@# name into every Ingress instead, so `kubectl get ingress` shows the
-	@# address that actually serves it.
 	$(HELM) upgrade --install ingress-nginx ingress-nginx \
 	  --repo https://kubernetes.github.io/ingress-nginx \
 	  --version $(INGRESS_NGINX_VERSION) \
 	  --namespace ingress-nginx --create-namespace \
 	  --set controller.service.type=NodePort \
-	  --set controller.service.nodePorts.http="$$($(TF_OUT) ingress_nodeport)" \
+	  --set controller.service.nodePorts.http="$$($(PLATFORM) ingress_nodeport)" \
 	  --set controller.publishService.enabled=false \
-	  --set controller.extraArgs.publish-status-address="$$($(TF_OUT) alb_dns_name)" \
+	  --set controller.extraArgs.publish-status-address="$$($(PLATFORM) alb_dns_name)" \
 	  --wait --timeout 5m
 	@echo
 	@echo "Targets take about 30s to pass their first health check."
@@ -597,7 +319,7 @@ ecr-auth: ## Give the cluster a pull secret for ECR, and a CronJob to refresh it
 url: ## The public URL, and the route each service answers on
 	$(need_env_values)
 	$(need_alb)
-	@base="$$($(TF_OUT) alb_url)"; echo "$$base"; echo; \
+	@base="$$($(PLATFORM) alb_url)"; echo "$$base"; echo; \
 	  $(HELM) template $(HELM_RELEASE) /work/helm/services \
 	    --namespace $(HELM_NS) $(VALUE_ARGS) $(HELM_SETS) 2>/dev/null \
 	  | python3 -c "\
@@ -625,8 +347,6 @@ helm-lint: ## Check the chart renders and follows Helm conventions
 helm-render: ## Print the Kubernetes YAML this release would apply
 	$(need_env_values)
 	$(warn_offline)
-	@# Silent on purpose: the output is meant to be piped into kubectl or a
-	@# file, and make echoing the docker command would corrupt the YAML.
 	@$(HELM) template $(HELM_RELEASE) /work/helm/services \
 	  --namespace $(HELM_NS) $(VALUE_ARGS) $(HELM_SETS)
 
@@ -644,8 +364,6 @@ helm-deploy: ## Apply the release — creates, updates and removes to match the 
 	$(need_registry)
 	$(need_cluster)
 	$(need_images)
-	@# --atomic rolls the release back if it does not become ready, rather
-	@# than leaving it `failed` for the next deploy to inherit.
 	$(HELM) upgrade --install $(HELM_RELEASE) /work/helm/services \
 	  --namespace $(HELM_NS) --create-namespace $(VALUE_ARGS) $(HELM_SETS) \
 	  --atomic --wait --timeout 5m
@@ -664,9 +382,6 @@ helm-uninstall: ## Remove the whole release (every service at once)
 	$(HELM) uninstall $(HELM_RELEASE) --namespace $(HELM_NS)
 
 # ─── Unknown targets ─────────────────────────────────────────────────────────
-# Plain make answers a typo with "No rule to make target 'plane'. Stop.", which
-# tells you that you are wrong but not what would have been right. .DEFAULT
-# runs whenever no rule matches, so this turns a typo into a suggestion.
 
 .PHONY: list
 list: ## List every target, one per line
@@ -690,6 +405,6 @@ list: ## List every target, one per line
 # ─── Housekeeping ────────────────────────────────────────────────────────────
 
 .PHONY: clean
-clean: ## Remove saved plans, the rendered graph and playbook artifacts
-	rm -f $(TF_DIR)/tfplan $(CURDIR)/graph.svg
+clean: ## Remove the rendered graph and playbook artifacts
+	rm -f $(CURDIR)/graph.svg
 	rm -rf $(CURDIR)/kubespray/inventory/$(WORKSPACE)/artifacts

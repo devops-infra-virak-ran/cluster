@@ -15,6 +15,9 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
+# Addresses come from platform/<workspace>.env, not from Terraform state.
+PLATFORM="${ROOT}/scripts/platform.sh"
+
 WORKSPACE="${1:-}"
 if [[ -z "${WORKSPACE}" || "${WORKSPACE}" == -* ]]; then
   echo "usage: $(basename "$0") <workspace> [--output PATH] [--port N] [--no-tunnel]" >&2
@@ -66,18 +69,29 @@ if [[ ! -f "${ADMIN_CONF}" ]]; then
   exit 1
 fi
 
-# Read the addresses out of the same workspace's state, so a mismatched
-# workspace cannot tunnel to one cluster with another's credentials.
-cd "${ROOT}/terraform"
-terraform workspace select "${WORKSPACE}" >/dev/null
-BASTION="$(terraform output -raw bastion_public_ip)"
-CONTROL_PLANE="$(terraform output -json control_plane_private_ips | jq -r '.[0]')"
-SSH_USER="$(sed -n 's/^[[:space:]]*node_ssh_user[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' "env/${WORKSPACE}.tfvars" | head -1)"
-SSH_KEY="$(sed -n 's/^[[:space:]]*ssh_private_key_path[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' "env/${WORKSPACE}.tfvars" | head -1)"
-cd - >/dev/null
+# Read the addresses for THIS workspace, so a mismatched workspace cannot
+# tunnel to one cluster with another's credentials.
+BASTION="$("${PLATFORM}" "${WORKSPACE}" bastion_ip)"
+CONTROL_PLANE="$("${PLATFORM}" "${WORKSPACE}" control_plane_ip)"
+SSH_USER="$("${PLATFORM}" "${WORKSPACE}" node_ssh_user)"
+SSH_KEY="$("${PLATFORM}" "${WORKSPACE}" ssh_private_key_path)"
 
-SSH_USER="${SSH_USER:-ubuntu}"
-SSH_KEY="${SSH_KEY:-${HOME}/.ssh/id_ed25519}"
+if [[ -z "${BASTION}" || -z "${CONTROL_PLANE}" ]]; then
+  echo "error: no bastion_ip / control_plane_ip for workspace '${WORKSPACE}'." >&2
+  echo "       Set BASTION_IP and CONTROL_PLANE_IP in platform/${WORKSPACE}.env" >&2
+  exit 1
+fi
+
+# Not guessed, for the same reason as in kubespray/run.sh: a default that
+# happens to exist but is wrong fails later and less clearly.
+missing=""
+[[ -n "${SSH_USER}" ]] || missing+=" NODE_SSH_USER"
+[[ -n "${SSH_KEY}"  ]] || missing+=" SSH_PRIVATE_KEY_PATH"
+if [[ -n "${missing}" ]]; then
+  echo "error: not configured for workspace '${WORKSPACE}':${missing}" >&2
+  echo "       set them in ${ROOT}/platform/${WORKSPACE}.env" >&2
+  exit 1
+fi
 SSH_KEY="${SSH_KEY/#\~/${HOME}}"
 
 mkdir -p "$(dirname "${OUTPUT}")"

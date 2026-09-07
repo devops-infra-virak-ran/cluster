@@ -32,6 +32,9 @@ SECRET="regcred"
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
+# Terraform sits beside this project, not inside it.
+PLATFORM="${ROOT}/scripts/platform.sh"
+
 # Bundles kubectl and the AWS CLI — both verified present in this tag. Pinned,
 # because an unpinned tag on the thing holding your registry credentials is how
 # a supply chain gets interesting. The version tracks kube_version in
@@ -39,7 +42,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # apiserver it talks to.
 IMAGE="${ECR_AUTH_IMAGE:-alpine/k8s:1.35.4}"
 
-tf_out() { TF_WORKSPACE="${WORKSPACE}" terraform -chdir="${ROOT}/terraform" output -raw "$1" 2>/dev/null; }
+tf_out() { "${PLATFORM}" "${WORKSPACE}" "$1" 2>/dev/null; }
 
 REGISTRY="$(tf_out ecr_registry_url)" || true
 REGION="$(tf_out region)" || true

@@ -1,39 +1,4 @@
-# ─── dev ─────────────────────────────────────────────────────────────────────
-# What differs about dev. One replica of everything: enough to see a rollout
-# and a route work, not enough to test what happens when a pod dies.
-#
-# Merged LAST, on top of helm/values/<group>/services.yaml, so anything named
-# here wins:
-#
-#   make helm-deploy WORKSPACE=dev
-#     -f helm/values/api-service/services.yaml    the catalogue
-#     -f helm/values/web-service/services.yaml
-#     -f helm/env/dev.yaml                        this file
-#
-# Tags are pinned per environment on purpose: the build running in dev is not
-# the one running in prod, and that difference has to live somewhere that is
-# not shared by both.
-#
-# A service listed here but not in the catalogue deploys nothing — `make
-# services` flags it. Add it to helm/values/<group>/services.yaml first.
-#
-# Application variables are NOT here — this file is in git. They live in
-# helm/env/dev.env, which is not, and reach the pods as the `app-env` Secret:
-#
-#   cp helm/env/dev.env.example helm/env/dev.env   fill it in
-#   make env-apply WORKSPACE=dev                   push it to the cluster
-#
-# A service reads them by listing the Secret in envFrom, below.
-
 groups:
-  # Both APIs are off in dev. `enabled: false` is what removes them — commenting
-  # the blocks out does not, because the catalogue in
-  # helm/values/api-service/services.yaml is what declares they exist. Without
-  # an override here they would still deploy, on the chart's default tag
-  # "latest", which is not in ECR.
-  #
-  # The settings each one needs when it comes back are kept below, so switching
-  # it on is a one-word edit.
   api-service:
     services:
       auth-api:

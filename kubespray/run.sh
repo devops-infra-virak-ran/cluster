@@ -21,6 +21,9 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "${HERE}/.." && pwd)"
 
+# The SSH key comes from platform/<workspace>.env, not from Terraform.
+PLATFORM="${ROOT}/scripts/platform.sh"
+
 KUBESPRAY_VERSION="${KUBESPRAY_VERSION:-v2.31.0}"
 IMAGE="quay.io/kubespray/kubespray:${KUBESPRAY_VERSION}"
 ENGINE="${CONTAINER_ENGINE:-docker}"
@@ -28,7 +31,7 @@ ENGINE="${CONTAINER_ENGINE:-docker}"
 WORKSPACE="${1:-}"
 if [[ -z "${WORKSPACE}" || "${WORKSPACE}" == -* ]]; then
   echo "usage: $(basename "$0") <workspace> [playbook] [ansible args...]" >&2
-  echo "       workspaces: $(ls "${ROOT}"/terraform/env/*.tfvars 2>/dev/null | xargs -n1 basename | sed 's/.tfvars//' | tr '\n' ' ')" >&2
+  echo "       workspaces: $(ls "${ROOT}"/platform/*.env 2>/dev/null | grep -v '\.local\.env$' | xargs -n1 basename | sed 's/\.env$//' | tr '\n' ' ')" >&2
   exit 1
 fi
 shift
@@ -42,7 +45,8 @@ KNOWN_HOSTS="${HERE}/.known_hosts"
 
 if [[ ! -s "${INVENTORY}" ]]; then
   echo "error: no inventory at ${INVENTORY}" >&2
-  echo "       make apply WORKSPACE=${WORKSPACE}   (or: make inventory WORKSPACE=${WORKSPACE})" >&2
+  echo "       This project does not generate one. Ask whoever provisions the" >&2
+  echo "       machines for it, or write it by hand — see README.md." >&2
   exit 1
 fi
 
@@ -69,14 +73,24 @@ fi
 # break both. This is also why the inventory template calls pathexpand() — a
 # "~" would resolve to /root in here.
 
-TFVARS="${ROOT}/terraform/env/${WORKSPACE}.tfvars"
-SSH_KEY="${SSH_KEY:-$(sed -n 's/^[[:space:]]*ssh_private_key_path[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' "${TFVARS}" 2>/dev/null | head -1)}"
-SSH_KEY="${SSH_KEY:-${HOME}/.ssh/id_ed25519}"
+SSH_KEY="${SSH_KEY:-$("${PLATFORM}" "${WORKSPACE}" ssh_private_key_path)}"
 SSH_KEY="${SSH_KEY/#\~/${HOME}}"
+
+# Nothing is guessed. A default of ~/.ssh/id_ed25519 would silently pick up
+# whatever key happens to be there — and if it exists but is the wrong one,
+# the failure arrives much later as an unhelpful SSH error.
+if [[ -z "${SSH_KEY}" ]]; then
+  echo "error: no ssh_private_key_path configured for workspace '${WORKSPACE}'." >&2
+  echo >&2
+  echo "  set it in   ${ROOT}/platform/${WORKSPACE}.env" >&2
+  echo "                SSH_PRIVATE_KEY_PATH=/absolute/path/to/key" >&2
+  echo "  or per-run  SSH_KEY=/absolute/path/to/key $(basename "$0") ${WORKSPACE} ..." >&2
+  exit 1
+fi
 
 if [[ ! -f "${SSH_KEY}" ]]; then
   echo "error: no SSH private key at ${SSH_KEY}" >&2
-  echo "       set SSH_KEY=/path/to/key, or fix ssh_private_key_path in ${TFVARS}" >&2
+  echo "       fix SSH_PRIVATE_KEY_PATH in ${ROOT}/platform/${WORKSPACE}.env" >&2
   exit 1
 fi
 
