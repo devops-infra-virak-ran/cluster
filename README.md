@@ -169,3 +169,4 @@ scripts/
 - **`pause` keeps private addresses.** A stopped instance keeps its private IP,
   so the inventory and kubeconfig still hold after `resume`. The bastion keeps
   its public address too, because it is an Elastic IP.
+# cluster
