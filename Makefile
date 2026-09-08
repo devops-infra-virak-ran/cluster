@@ -15,6 +15,12 @@ INVENTORY         := $(CURDIR)/kubespray/inventory/$(WORKSPACE)/inventory.ini
 
 EBS_CSI_VERSION   ?= v1.64.0
 
+# ArgoCD. `stable` always resolves to the latest release manifest; pin a tag
+# (e.g. ARGOCD_VERSION=v3.0.6) for a reproducible install.
+ARGOCD_VERSION ?= stable
+ARGOCD_NS      ?= argocd
+ARGOCD_MANIFEST := https://raw.githubusercontent.com/argoproj/argo-cd/$(ARGOCD_VERSION)/manifests/install.yaml
+
 # ─── Helm ────────────────────────────────────────────────────────────────────
 HELM_VERSION ?= 3.16.3
 INGRESS_NGINX_VERSION ?= 4.14.5
@@ -139,6 +145,10 @@ platform: ## Show this workspace's platform facts, and which are missing
 	else echo "All set."; fi
 
 # ─── Cluster ─────────────────────────────────────────────────────────────────
+
+.PHONY: inventory
+inventory: ## Discover the nodes from AWS tags and (re)write the Kubespray inventory
+	@scripts/discover-inventory.sh $(WORKSPACE)
 
 .PHONY: up
 up: ## Everything: Kubernetes, ingress, services, URL (25-45 min)
@@ -401,6 +411,51 @@ list: ## List every target, one per line
 	 fi
 	@echo; echo "\`make help\` describes them all."
 	@exit 1
+
+# ─── ArgoCD ──────────────────────────────────────────────────────────────────
+# GitOps for the services chart. ArgoCD runs in the cluster and reconciles the
+# chart from git; `make helm-deploy` still works, because the Application syncs
+# manually (it shows drift but does not act until you sync).
+
+.PHONY: argocd-install
+argocd-install: ## Install ArgoCD into the cluster (one-time)
+	@kubectl create namespace $(ARGOCD_NS) --dry-run=client -o yaml | kubectl apply -f -
+	kubectl apply -n $(ARGOCD_NS) -f $(ARGOCD_MANIFEST)
+	@echo "waiting for the server to come up..."
+	kubectl -n $(ARGOCD_NS) rollout status deploy/argocd-server --timeout=180s
+	@echo; echo "Next: make argocd-app WORKSPACE=$(WORKSPACE)"
+
+.PHONY: argocd-app
+argocd-app: ## Render this workspace's Application from platform.<ws>.env and apply it
+	@scripts/argocd-app.sh $(WORKSPACE)
+
+.PHONY: argocd-password
+argocd-password: ## Print the initial ArgoCD admin password
+	@kubectl -n $(ARGOCD_NS) get secret argocd-initial-admin-secret \
+	  -o jsonpath='{.data.password}' | base64 -d; echo
+
+.PHONY: argocd-ui
+argocd-ui: ## Port-forward the ArgoCD UI to https://localhost:8080 (Ctrl-C ends it)
+	@echo "UI: https://localhost:8080   user: admin   pass: make argocd-password"
+	kubectl -n $(ARGOCD_NS) port-forward svc/argocd-server 8080:443
+
+.PHONY: argocd-sync
+argocd-sync: ## Sync this workspace's Application now (manual sync)
+	@if command -v argocd >/dev/null 2>&1; then \
+	  argocd app sync services-$(WORKSPACE); \
+	else \
+	  echo "argocd CLI not found — triggering a sync via the API instead:"; \
+	  kubectl -n $(ARGOCD_NS) patch application services-$(WORKSPACE) --type merge \
+	    -p '{"operation":{"initiatedBy":{"username":"makefile"},"sync":{}}}'; \
+	  echo "watch it:  make argocd-ui   (or kubectl -n $(ARGOCD_NS) get app services-$(WORKSPACE) -w)"; \
+	fi
+
+.PHONY: argocd-uninstall
+argocd-uninstall: ## Remove ArgoCD and its Applications
+	@read -p "Remove ArgoCD from workspace '$(WORKSPACE)'? Type the workspace name: " c; \
+	  if [[ "$$c" != "$(WORKSPACE)" ]]; then echo "aborted"; exit 1; fi
+	-kubectl delete -n $(ARGOCD_NS) -f $(ARGOCD_MANIFEST) --ignore-not-found
+	-kubectl delete namespace $(ARGOCD_NS) --ignore-not-found
 
 # ─── Housekeeping ────────────────────────────────────────────────────────────
 

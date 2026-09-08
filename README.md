@@ -8,7 +8,7 @@ This project owns no infrastructure. It needs three things to already exist:
 | | |
 | --- | --- |
 | **Servers** | 1 or 3 control planes, plus workers, reachable over SSH |
-| **An inventory** | `kubespray/inventory/<workspace>/inventory.ini` |
+| **Node tags** | set by Terraform (`KubesprayRole`/`KubesprayName`/`EtcdMemberName`) so the inventory can be discovered from AWS |
 | **Platform facts** | `platform/<workspace>.env` — registry, load balancer, addresses |
 
 Nothing here runs Terraform, reads Terraform state, or needs the repo that
@@ -41,10 +41,11 @@ Everything this project needs from the infrastructure comes through
 
 Neither file is committed — this repository is public, and layer 3 names a live
 environment. `platform/<ws>.env.example` lists every key; get the values from
-whoever provisions the machines, who can generate the file directly:
+whoever provisions the machines — they come from `terraform output` in the
+infrastructure project. Copy the example and fill them in:
 
 ```bash
-make platform-env WORKSPACE=dev > platform/dev.env    # in the infrastructure repo
+cp platform/dev.env.example platform/dev.env    # then paste the values
 ```
 
 ```bash
@@ -105,8 +106,8 @@ make helm-deploy WORKSPACE=dev
 | A service's tag or replicas | edit `helm/env/<ws>.yaml`, then `helm-deploy` |
 | Add or remove a service | `svc-add` / `svc-rm`, then `helm-deploy` |
 | Application secrets | edit `helm/env/<ws>.env`, then `env-apply` |
-| More nodes | have them provisioned, refresh the inventory, `kubespray-scale NODES=…` |
-| Addresses changed | update `platform/<ws>.env` and the inventory |
+| More nodes | apply more in Terraform, then `kubespray-scale NODES=…` (they're auto-discovered) |
+| Addresses changed | update `platform/<ws>.env`; the inventory re-discovers itself |
 
 ## Targets
 
@@ -135,7 +136,7 @@ platform/
 kubespray/
   run.sh                 runs playbooks in the pinned container
   group_vars/            cluster configuration
-  inventory/<ws>/        the inventory, provided not generated
+  inventory/<ws>/        discovered from AWS tags at run time (gitignored)
   storage/               gp3 StorageClass
 helm/
   services/              the chart
@@ -153,9 +154,11 @@ scripts/
 
 ## Gotchas
 
-- **The inventory is provided, not generated.** If addresses changed, every
-  host comes back `UNREACHABLE` in about 15 seconds. Ask for a fresh one —
-  editing it by hand works until the next time it is regenerated.
+- **The inventory is discovered from AWS tags, not committed.** `run.sh`
+  regenerates it every run (`make inventory` to do it alone), so it cannot go
+  stale — a rebuilt cluster with all-new IPs just works. Needs the `aws` CLI +
+  `jq` on your machine and AWS read access. `SKIP_DISCOVER=1` reuses the last
+  file (offline, or to hand-edit for a one-off).
 - **`platform/<ws>.env` goes stale the same way.** Regenerate it after any
   apply that moves an address. `make platform` shows the values;
   `make kubespray-ping` proves them.

@@ -42,36 +42,32 @@ GROUP_VARS="${HERE}/group_vars"
 KNOWN_HOSTS="${HERE}/.known_hosts"
 
 # ─── Inventory ───────────────────────────────────────────────────────────────
+# Discovered fresh from AWS tags on every run, so it can never be stale or
+# point at a rebuilt cluster's old IPs. Skip with SKIP_DISCOVER=1 to reuse the
+# last-generated file (e.g. offline, or to hand-edit for a one-off).
+
+if [[ "${SKIP_DISCOVER:-0}" != "1" ]]; then
+  "${ROOT}/scripts/discover-inventory.sh" "${WORKSPACE}"
+fi
 
 if [[ ! -s "${INVENTORY}" ]]; then
   echo "error: no inventory at ${INVENTORY}" >&2
-  echo "       This project does not generate one. Ask whoever provisions the" >&2
-  echo "       machines for it, or write it by hand — see README.md." >&2
-  exit 1
-fi
-
-# The inventory is per-workspace and Terraform stamps the workspace into it.
-# Checking both means a mismatched pair — a prod inventory reached through a
-# dev path, a file copied by hand — stops here rather than 30 minutes into a
-# playbook that is reconfiguring the wrong cluster.
-STAMPED="$(sed -n 's/^# Workspace:[[:space:]]*//p' "${INVENTORY}" | head -1)"
-if [[ -n "${STAMPED}" && "${STAMPED}" != "${WORKSPACE}" ]]; then
-  echo "error: ${INVENTORY} was generated for workspace '${STAMPED}', not '${WORKSPACE}'." >&2
-  echo "       make inventory WORKSPACE=${WORKSPACE}" >&2
+  echo "       discovery found no nodes — is the cluster applied and running?" >&2
+  echo "         make apply WORKSPACE=${WORKSPACE}   (in the terraform project)" >&2
   exit 1
 fi
 
 if ! grep -qE '^(cp|worker)[0-9]+[[:space:]]' "${INVENTORY}"; then
-  echo "error: ${INVENTORY} has no hosts — was the workspace destroyed?" >&2
+  echo "error: ${INVENTORY} has no hosts — was the workspace destroyed or paused?" >&2
   exit 1
 fi
 
 # ─── SSH key ─────────────────────────────────────────────────────────────────
 # Resolved to an absolute path and mounted at that *same* path inside the
-# container: the inventory names an absolute key path for both the node
-# connection and the bastion ProxyCommand, and mounting it anywhere else would
-# break both. This is also why the inventory template calls pathexpand() — a
-# "~" would resolve to /root in here.
+# container: the generated inventory names an absolute key path for both the
+# node connection and the bastion ProxyCommand, and mounting it anywhere else
+# would break both. discover-inventory.sh expands "~" for the same reason — it
+# would resolve to /root in here.
 
 SSH_KEY="${SSH_KEY:-$("${PLATFORM}" "${WORKSPACE}" ssh_private_key_path)}"
 SSH_KEY="${SSH_KEY/#\~/${HOME}}"
