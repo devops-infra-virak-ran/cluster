@@ -20,6 +20,8 @@ EBS_CSI_VERSION   ?= v1.64.0
 ARGOCD_VERSION ?= stable
 ARGOCD_NS      ?= argocd
 ARGOCD_MANIFEST := https://raw.githubusercontent.com/argoproj/argo-cd/$(ARGOCD_VERSION)/manifests/install.yaml
+ARGOCD_PORT    ?= 8080
+GIT_REPO_URL   := $(shell git config --get remote.origin.url 2>/dev/null)
 
 # ─── Helm ────────────────────────────────────────────────────────────────────
 HELM_VERSION ?= 3.16.3
@@ -420,7 +422,11 @@ list: ## List every target, one per line
 .PHONY: argocd-install
 argocd-install: ## Install ArgoCD into the cluster (one-time)
 	@kubectl create namespace $(ARGOCD_NS) --dry-run=client -o yaml | kubectl apply -f -
-	kubectl apply -n $(ARGOCD_NS) -f $(ARGOCD_MANIFEST)
+	@# --server-side: the applicationsets CRD is larger than the 256KB a
+	@# client-side apply can stash in its last-applied annotation. Server-side
+	@# apply does not use that annotation. --force-conflicts reconciles fields a
+	@# partial earlier (client-side) apply already took ownership of.
+	kubectl apply --server-side --force-conflicts -n $(ARGOCD_NS) -f $(ARGOCD_MANIFEST)
 	@echo "waiting for the server to come up..."
 	kubectl -n $(ARGOCD_NS) rollout status deploy/argocd-server --timeout=180s
 	@echo; echo "Next: make argocd-app WORKSPACE=$(WORKSPACE)"
@@ -435,9 +441,9 @@ argocd-password: ## Print the initial ArgoCD admin password
 	  -o jsonpath='{.data.password}' | base64 -d; echo
 
 .PHONY: argocd-ui
-argocd-ui: ## Port-forward the ArgoCD UI to https://localhost:8080 (Ctrl-C ends it)
-	@echo "UI: https://localhost:8080   user: admin   pass: make argocd-password"
-	kubectl -n $(ARGOCD_NS) port-forward svc/argocd-server 8080:443
+argocd-ui: ## Port-forward the ArgoCD UI to https://localhost:$(ARGOCD_PORT) (override ARGOCD_PORT)
+	@echo "UI: https://localhost:$(ARGOCD_PORT)   user: admin   pass: make argocd-password"
+	kubectl -n $(ARGOCD_NS) port-forward svc/argocd-server $(ARGOCD_PORT):443
 
 .PHONY: argocd-sync
 argocd-sync: ## Sync this workspace's Application now (manual sync)
@@ -449,6 +455,27 @@ argocd-sync: ## Sync this workspace's Application now (manual sync)
 	    -p '{"operation":{"initiatedBy":{"username":"makefile"},"sync":{}}}'; \
 	  echo "watch it:  make argocd-ui   (or kubectl -n $(ARGOCD_NS) get app services-$(WORKSPACE) -w)"; \
 	fi
+
+.PHONY: argocd-repo
+argocd-repo: ## Give ArgoCD read access to the private git repo (GITHUB_USER=.. GITHUB_TOKEN=..)
+	@test -n "$(GITHUB_USER)" && test -n "$(GITHUB_TOKEN)" || { \
+	  echo "usage: make argocd-repo GITHUB_USER=<user> GITHUB_TOKEN=<PAT>"; \
+	  echo "  the PAT needs READ access to $(GIT_REPO_URL)"; \
+	  echo "  (GitHub → Settings → Developer settings → fine-grained token,"; \
+	  echo "   repository access = that one repo, permission = Contents: read-only)"; \
+	  exit 1; }
+	@# A repository-type Secret is how ArgoCD (no CLI here) learns a private repo's
+	@# credentials. The token is passed in, never written to disk or committed.
+	@kubectl -n $(ARGOCD_NS) create secret generic repo-cluster \
+	  --from-literal=type=git \
+	  --from-literal=url="$(GIT_REPO_URL)" \
+	  --from-literal=username="$(GITHUB_USER)" \
+	  --from-literal=password="$(GITHUB_TOKEN)" \
+	  --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+	@kubectl -n $(ARGOCD_NS) label secret repo-cluster \
+	  argocd.argoproj.io/secret-type=repository --overwrite >/dev/null
+	@echo "ArgoCD can now read $(GIT_REPO_URL)."
+	@echo "Re-sync: make argocd-sync WORKSPACE=$(WORKSPACE)"
 
 .PHONY: argocd-uninstall
 argocd-uninstall: ## Remove ArgoCD and its Applications

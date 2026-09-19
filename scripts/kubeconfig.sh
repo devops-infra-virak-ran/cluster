@@ -147,7 +147,38 @@ if [[ "${BACKGROUND}" == true ]]; then
   kill "$(cat "${PIDFILE}")" 2>/dev/null || true
   rm -f "${PIDFILE}"
   echo "error: port ${PORT} never came up — the bastion at ${BASTION} is not answering." >&2
-  echo "       Check the SSH allowlist first:  make myip WORKSPACE=${WORKSPACE}" >&2
+  echo >&2
+
+  # Most often the address is simply stale: platform/<workspace>.env is pasted
+  # by hand after an apply, while inventory.ini is regenerated from AWS tags.
+  # When the two disagree, that is the answer, so say so instead of sending
+  # the reader off to guess.
+  INVENTORY_INI="${ROOT}/kubespray/inventory/${WORKSPACE}/inventory.ini"
+  DISCOVERED=""
+  [[ -f "${INVENTORY_INI}" ]] &&
+    DISCOVERED="$(sed -n 's/^#[[:space:]]*Bastion:[[:space:]]*//p' "${INVENTORY_INI}" | head -1 | tr -d '[:space:]')"
+
+  if [[ -n "${DISCOVERED}" && "${DISCOVERED}" != "none"* && "${DISCOVERED}" != "${BASTION}" ]]; then
+    echo "       The inventory disagrees about where the bastion is:" >&2
+    echo "         platform/${WORKSPACE}.env  BASTION_IP=${BASTION}" >&2
+    echo "         inventory.ini (from AWS)   ${DISCOVERED}" >&2
+    echo >&2
+    echo "       An apply moved the address and platform/${WORKSPACE}.env was not" >&2
+    echo "       repasted. Refresh it from the infrastructure project's outputs" >&2
+    echo "       (bastion_public_ip, control_plane_private_ips, alb_url), or set:" >&2
+    echo "         BASTION_IP=${DISCOVERED}" >&2
+  else
+    echo "       Two things to check, in this order:" >&2
+    echo >&2
+    echo "       1. Is the address current? platform/${WORKSPACE}.env is pasted by" >&2
+    echo "          hand and goes stale whenever an apply replaces the bastion:" >&2
+    echo "            make inventory WORKSPACE=${WORKSPACE}   # re-reads AWS tags" >&2
+    echo >&2
+    echo "       2. Is your IP still allowlisted? An unmatched source address" >&2
+    echo "          hangs rather than refuses. That check lives with the" >&2
+    echo "          infrastructure, not here:" >&2
+    echo "            make myip WORKSPACE=${WORKSPACE}        # in the terraform project" >&2
+  fi
   exit 1
 fi
 
