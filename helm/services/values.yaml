@@ -67,6 +67,29 @@ defaults:
   podSecurityContext:
     fsGroup: 1000
 
+  # Off by default: `replicas` above is the count unless a service opts in.
+  # When enabled the Deployment stops rendering `replicas` altogether and the
+  # HPA owns it — see templates/hpa.yaml.
+  #
+  # minReplicas 2, not 1, for redundancy: at 1 the service has no spare pod, so
+  # a node failure or a crash-loop is an outage rather than a degraded moment.
+  # (Rollouts themselves are fine at 1 — maxSurge 1 adds the new pod before
+  # removing the old.) dev overrides this to 1 to save capacity; anything
+  # serving real traffic should not.
+  autoscaling:
+    enabled: false
+    minReplicas: 2
+    maxReplicas: 6
+    targetCPUUtilizationPercentage: 70
+    # targetMemoryUtilizationPercentage:   # opt-in; see the note in hpa.yaml
+    behavior:
+      scaleDown:
+        # 5 minutes, against the 15-minute default. Long enough not to chase a
+        # brief dip, short enough to give the capacity back the same afternoon.
+        stabilizationWindowSeconds: 300
+      scaleUp:
+        stabilizationWindowSeconds: 0
+
   strategy:
     type: RollingUpdate
     rollingUpdate:

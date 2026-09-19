@@ -22,7 +22,15 @@ metadata:
   labels:
     {{- include "services.labels" $ctx | nindent 4 }}
 spec:
+  {{/*
+    Omitted entirely when an HPA owns this Deployment. Rendering it would make
+    every `helm upgrade` reset the count to the static value, the HPA would
+    scale it back moments later, and the two would fight — visible as pods
+    cycling after each deploy. Absent, the HPA is the only writer.
+  */}}
+  {{- if not (and $svc.autoscaling $svc.autoscaling.enabled) }}
   replicas: {{ $svc.replicas }}
+  {{- end }}
   {{- with $svc.strategy }}
   strategy:
     {{- toYaml . | nindent 4 }}

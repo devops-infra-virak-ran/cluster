@@ -4,7 +4,11 @@ groups:
       auth-api:
         enabled: true
         image: { tag: "prod.v3.0.5" }
-        replicas: 1
+        autoscaling:
+          enabled: true
+          minReplicas: 1
+          maxReplicas: 3
+          targetCPUUtilizationPercentage: 70
         route: /api/auth
         rewrite: null
         envFrom:
@@ -13,7 +17,11 @@ groups:
       core-api:
         enabled: true
         image: { tag: "prod.v2.0.2" }
-        replicas: 1
+        autoscaling:
+          enabled: true
+          minReplicas: 1
+          maxReplicas: 3
+          targetCPUUtilizationPercentage: 70
         route: null
         routePrefix: null
         probes:
@@ -26,6 +34,10 @@ groups:
     services:
       client-side:
         image: { tag: "prod.v1.0.7" }
-        replicas: 1
+        autoscaling:
+          enabled: true
+          minReplicas: 1
+          maxReplicas: 3
+          targetCPUUtilizationPercentage: 70
         envFrom:
           - secretRef: { name: app-env }
