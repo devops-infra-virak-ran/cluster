@@ -4,11 +4,13 @@ GitOps for the `services` chart. ArgoCD runs in the cluster and reconciles the
 chart from git. Sync is **manual** to start, so `make helm-deploy` keeps working
 alongside it — ArgoCD shows drift but does not act until you sync.
 
-make storage · ingress · ecr-auth · env-apply WORKSPACE=dev # bootstrap (unchanged)
+```bash
+make storage · ingress · ecr-auth · env-apply WORKSPACE=dev   # bootstrap (unchanged)
 make argocd-install
-make argocd-app WORKSPACE=dev
-make argocd-sync WORKSPACE=dev
-make argocd-ui # admin / make argocd-password
+make argocd-app    WORKSPACE=dev
+make argocd-sync   WORKSPACE=dev
+make argocd-expose WORKSPACE=dev   # UI at https://<site>/argocd
+```
 
 ## Prerequisites
 
@@ -31,6 +33,46 @@ Watch it:
 make argocd-password                # the admin password
 make argocd-ui                      # https://localhost:8080  (user: admin)
 ```
+
+`make argocd-ui` port-forwards, so it needs the tunnel up and a free local
+port. 8080 is the default and is often already taken — a local Jenkins is the
+usual culprit. `ARGOCD_PORT` overrides it: `make argocd-ui ARGOCD_PORT=8090`.
+
+## The web UI on the load balancer
+
+`make argocd-expose WORKSPACE=dev` publishes the UI at
+`https://<site_url>/argocd`, through the ALB and ingress controller the
+services already use, restricted to `ADMIN_ALLOWED_CIDRS`. No port-forward, no
+tunnel — but also no second hostname, because the ALB certificate covers the
+apex domain and nothing else, so `argocd.<domain>` would fail TLS.
+
+```bash
+make argocd-expose   WORKSPACE=dev                  # publish
+make argocd-expose   WORKSPACE=dev --render-only    # see the manifest, change nothing
+make argocd-unexpose WORKSPACE=dev                  # back to port-forward only
+```
+
+Three settings have to agree, which is why one target does all of them:
+
+| | why |
+| --- | --- |
+| `server.rootpath=/argocd` | ArgoCD builds asset URLs from it. Left at `/`, the page loads and every script under it 404s. |
+| `server.insecure=true` | TLS terminates at the ALB. A second hop to ArgoCD's self-signed cert only fails. |
+| `use-forwarded-headers` | Set by `make ingress`. Without it nginx sees the ALB's private IP as the client and the allowlist 403s everyone. |
+
+The allowlist is a snapshot of one address, not a subscription. When your
+network changes, the UI starts returning 403 — re-run `make argocd-expose`.
+Unset `ADMIN_ALLOWED_CIDRS` and it detects your current public address instead,
+the same way `make myip` does in the infrastructure project.
+
+Reapplying the base install (`make argocd-install`) resets
+`argocd-cmd-params-cm`, dropping the rootpath and insecure settings with it.
+Run `make argocd-expose` again after any reinstall.
+
+Between the ALB and the pod the traffic is plain HTTP inside the VPC. That is
+the same path the services already take, and the worker security group opens
+the NodePort range to the load balancer alone — but it is worth knowing before
+this pattern is copied to an environment that matters.
 
 ## How the pieces fit
 

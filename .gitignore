@@ -10,3 +10,6 @@ graph.svg
 
 # Rendered ArgoCD Applications carry the ECR prefix (account id) — not committed.
 argocd/application-*.yaml
+
+# Rendered ArgoCD Ingress — names the live host and the allowed addresses.
+argocd/ingress-*.yaml

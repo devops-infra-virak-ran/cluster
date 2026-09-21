@@ -40,7 +40,7 @@ if [[ -z "${WORKSPACE}" || -z "${KEY}" ]]; then
   echo "usage: $(basename "$0") <workspace> <key>" >&2
   echo "       keys: region cluster_name ecr_image_prefix alb_url alb_dns_name" >&2
   echo "             ingress_nodeport bastion_ip control_plane_ip node_ssh_user" >&2
-  echo "             ssh_private_key_path" >&2
+  echo "             ssh_private_key_path site_url admin_allowed_cidrs" >&2
   exit 1
 fi
 

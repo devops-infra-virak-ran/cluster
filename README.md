@@ -5,11 +5,11 @@ on it. One environment per workspace.
 
 This project owns no infrastructure. It needs three things to already exist:
 
-| | |
-| --- | --- |
-| **Servers** | 1 or 3 control planes, plus workers, reachable over SSH |
-| **Node tags** | set by Terraform (`KubesprayRole`/`KubesprayName`/`EtcdMemberName`) so the inventory can be discovered from AWS |
-| **Platform facts** | `platform/<workspace>.env` — registry, load balancer, addresses |
+|                    |                                                                                                                 |
+| ------------------ | --------------------------------------------------------------------------------------------------------------- |
+| **Servers**        | 1 or 3 control planes, plus workers, reachable over SSH                                                         |
+| **Node tags**      | set by Terraform (`KubesprayRole`/`KubesprayName`/`EtcdMemberName`) so the inventory can be discovered from AWS |
+| **Platform facts** | `platform/<workspace>.env` — registry, load balancer, addresses                                                 |
 
 Nothing here runs Terraform, reads Terraform state, or needs the repo that
 built the machines.
@@ -17,6 +17,7 @@ built the machines.
 ## Quick start
 
 ```bash
+make -C ../terraform myip WORKSPACE=dev    # your public IP into the SSH allowlist
 make platform       WORKSPACE=dev    # are all the facts configured?
 make kubespray-pull WORKSPACE=dev    # ~1-3 min
 make kubespray-ping WORKSPACE=dev    # ~15 s — want 4 × SUCCESS
@@ -32,12 +33,12 @@ fail twenty minutes into a playbook.
 Everything this project needs from the infrastructure comes through
 `scripts/platform.sh`, resolved in this order — first hit wins:
 
-| | Source | Scope |
-| --- | --- | --- |
-| 1 | environment variable | one command |
-| 2 | `platform/<ws>.local.env` | **your machine** — gitignored |
-| 3 | `platform/<ws>.env` | **the environment** — gitignored, handed over |
-| 4 | SSM, when `PLATFORM_SSM_PREFIX` is set | the account |
+|     | Source                                 | Scope                                         |
+| --- | -------------------------------------- | --------------------------------------------- |
+| 1   | environment variable                   | one command                                   |
+| 2   | `platform/<ws>.local.env`              | **your machine** — gitignored                 |
+| 3   | `platform/<ws>.env`                    | **the environment** — gitignored, handed over |
+| 4   | SSM, when `PLATFORM_SSM_PREFIX` is set | the account                                   |
 
 Neither file is committed — this repository is public, and layer 3 names a live
 environment. `platform/<ws>.env.example` lists every key; get the values from
@@ -68,20 +69,20 @@ make platform WORKSPACE=dev                                # confirms both
 
 Each step works on its own, in this order.
 
-| # | Target | Min | What it does |
-| --- | --- | --- | --- |
-| 1 | `kubespray-pull` | 1-3 | The pinned Kubespray image |
-| 2 | `kubespray-ping` | — | Ansible reaches every node through the bastion |
-| 3 | `kubespray-deploy` | 20-40 | Kubernetes itself |
-| 4 | `tunnel` | — | A kubeconfig, and an SSH tunnel to the apiserver |
-| 5 | `storage` | 1 | EBS CSI driver, gp3 as the default StorageClass |
-| 6 | `ingress` | 1-2 | ingress-nginx, pinned to the NodePort the load balancer polls |
-| 7 | `ecr-auth` | — | The pull secret, and a CronJob that refreshes it |
-| 8 | `env-apply` | — | `helm/env/<ws>.env` into the cluster as the `app-env` Secret |
-| 9 | `helm-deploy` | 1-2 | Every service in the catalogue |
-| 10 | `url` | — | Where each one answers |
+| #   | Target             | Min   | What it does                                                  |
+| --- | ------------------ | ----- | ------------------------------------------------------------- |
+| 1   | `kubespray-pull`   | 1-3   | The pinned Kubespray image                                    |
+| 2   | `kubespray-ping`   | —     | Ansible reaches every node through the bastion                |
+| 3   | `kubespray-deploy` | 20-40 | Kubernetes itself                                             |
+| 4   | `tunnel`           | —     | A kubeconfig, and an SSH tunnel to the apiserver              |
+| 5   | `storage`          | 1     | EBS CSI driver, gp3 as the default StorageClass               |
+| 6   | `ingress`          | 1-2   | ingress-nginx, pinned to the NodePort the load balancer polls |
+| 7   | `ecr-auth`         | —     | The pull secret, and a CronJob that refreshes it              |
+| 8   | `env-apply`        | —     | `helm/env/<ws>.env` into the cluster as the `app-env` Secret  |
+| 9   | `helm-deploy`      | 1-2   | Every service in the catalogue                                |
+| 10  | `url`              | —     | Where each one answers                                        |
 
-Three of those orderings are load-bearing, and all three fail *slowly*:
+Three of those orderings are load-bearing, and all three fail _slowly_:
 
 - **`tunnel`, not `kubeconfig`.** Same job, but `kubeconfig` holds the tunnel in
   the foreground until Ctrl-C, which stops a chained run dead.
@@ -101,13 +102,13 @@ make helm-diff   WORKSPACE=dev   # what would change
 make helm-deploy WORKSPACE=dev
 ```
 
-| Change | What to run |
-| --- | --- |
-| A service's tag or replicas | edit `helm/env/<ws>.yaml`, then `helm-deploy` |
-| Add or remove a service | `svc-add` / `svc-rm`, then `helm-deploy` |
-| Application secrets | edit `helm/env/<ws>.env`, then `env-apply` |
-| More nodes | apply more in Terraform, then `kubespray-scale NODES=…` (they're auto-discovered) |
-| Addresses changed | update `platform/<ws>.env`; the inventory re-discovers itself |
+| Change                      | What to run                                                                       |
+| --------------------------- | --------------------------------------------------------------------------------- |
+| A service's tag or replicas | edit `helm/env/<ws>.yaml`, then `helm-deploy`                                     |
+| Add or remove a service     | `svc-add` / `svc-rm`, then `helm-deploy`                                          |
+| Application secrets         | edit `helm/env/<ws>.env`, then `env-apply`                                        |
+| More nodes                  | apply more in Terraform, then `kubespray-scale NODES=…` (they're auto-discovered) |
+| Addresses changed           | update `platform/<ws>.env`; the inventory re-discovers itself                     |
 
 ## Targets
 
@@ -115,13 +116,13 @@ make helm-deploy WORKSPACE=dev
 make help                        # this list, with the current WORKSPACE
 ```
 
-| Group | |
-| --- | --- |
-| **Platform** | `platform` |
-| **Cluster** | `up` · `cluster-up` · `kubespray-pull` · `-ping` · `-deploy` · `-scale` · `-remove` · `-upgrade` · `-reset` · `-shell` · `kubeconfig` · `tunnel` · `tunnel-stop` · `storage` |
-| **Pausing** | `pause` · `resume` · `cluster-down` |
-| **Services** | `services` · `svc-add` · `svc-rm` · `ingress` · `env-apply` · `ecr-auth` · `url` · `helm-lint` · `helm-render` · `helm-diff` · `helm-deploy` · `helm-status` · `helm-uninstall` |
-| **Housekeeping** | `list` · `clean` |
+| Group            |                                                                                                                                                                                 |
+| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Platform**     | `platform`                                                                                                                                                                      |
+| **Cluster**      | `up` · `cluster-up` · `kubespray-pull` · `-ping` · `-deploy` · `-scale` · `-remove` · `-upgrade` · `-reset` · `-shell` · `kubeconfig` · `tunnel` · `tunnel-stop` · `storage`    |
+| **Pausing**      | `pause` · `resume` · `cluster-down`                                                                                                                                             |
+| **Services**     | `services` · `svc-add` · `svc-rm` · `ingress` · `env-apply` · `ecr-auth` · `url` · `helm-lint` · `helm-render` · `helm-diff` · `helm-deploy` · `helm-status` · `helm-uninstall` |
+| **Housekeeping** | `list` · `clean`                                                                                                                                                                |
 
 There is no `apply`, `destroy` or `plan` here. This project cannot create or
 delete infrastructure, which is the point.
@@ -172,4 +173,9 @@ scripts/
 - **`pause` keeps private addresses.** A stopped instance keeps its private IP,
   so the inventory and kubeconfig still hold after `resume`. The bastion keeps
   its public address too, because it is an Elastic IP.
+
 # cluster
+
+kubectl -n apps logs deploy/apps-auth-api -f --tail=100
+kubectl -n apps logs deploy/apps-core-api -f --tail=100
+kubectl -n apps logs deploy/apps-client-side -f --tail=100

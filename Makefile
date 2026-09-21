@@ -26,6 +26,13 @@ GIT_REPO_URL   := $(shell git config --get remote.origin.url 2>/dev/null)
 # ─── Helm ────────────────────────────────────────────────────────────────────
 HELM_VERSION ?= 3.16.3
 INGRESS_NGINX_VERSION ?= 4.14.5
+
+# Which source addresses nginx will believe an X-Forwarded-For from. Everything
+# reaching the controller arrives through the ALB — the worker security group
+# opens the NodePort range to the load balancer's security group and to nothing
+# else — so this only has to cover the VPC. Without it nginx reports the ALB as
+# the client on every request, which breaks per-IP rules and access logs alike.
+REAL_IP_CIDR ?= 10.0.0.0/8
 HELM_RELEASE ?= apps
 HELM_NS      ?= apps
 CHART        := $(CURDIR)/helm/services
@@ -128,6 +135,11 @@ PLATFORM_KEYS := region cluster_name ecr_image_prefix ecr_registry_url \
                  ingress_nodeport bastion_ip control_plane_ip node_ssh_user \
                  ssh_private_key_path
 
+# Shown, but never fatal. site_url exists only where a workspace has a domain,
+# and argocd-expose detects admin_allowed_cidrs when it is unset — so a missing
+# one of these is a fact about the environment, not a broken handover.
+PLATFORM_KEYS_OPTIONAL := site_url admin_allowed_cidrs
+
 .PHONY: platform
 platform: ## Show this workspace's platform facts, and which are missing
 	@printf 'workspace: \033[36m%s\033[0m\n' "$(WORKSPACE)"
@@ -138,6 +150,12 @@ platform: ## Show this workspace's platform facts, and which are missing
 	  o="$$(scripts/platform.sh $(WORKSPACE) $$k --origin)"; \
 	  if [[ -n "$$v" ]]; then printf '  %-22s %-8s %s\n' "$$k" "$$o" "$$v"; \
 	  else printf '  %-22s %-8s \033[31mMISSING\033[0m\n' "$$k" "-"; missing=1; fi; \
+	done; \
+	for k in $(PLATFORM_KEYS_OPTIONAL); do \
+	  v="$$(scripts/platform.sh $(WORKSPACE) $$k)"; \
+	  o="$$(scripts/platform.sh $(WORKSPACE) $$k --origin)"; \
+	  if [[ -n "$$v" ]]; then printf '  %-22s %-8s %s\n' "$$k" "$$o" "$$v"; \
+	  else printf '  %-22s %-8s \033[2moptional — not set\033[0m\n' "$$k" "-"; fi; \
 	done; \
 	echo; \
 	if [[ $$missing -eq 1 ]]; then \
@@ -312,6 +330,8 @@ ingress: ## Install the ingress controller the ALB forwards to
 	  --set controller.service.nodePorts.http="$$($(PLATFORM) ingress_nodeport)" \
 	  --set controller.publishService.enabled=false \
 	  --set controller.extraArgs.publish-status-address="$$($(PLATFORM) alb_dns_name)" \
+	  --set controller.config.use-forwarded-headers=true \
+	  --set controller.config.proxy-real-ip-cidr=$(REAL_IP_CIDR) \
 	  --wait --timeout 5m
 	@echo
 	@echo "Targets take about 30s to pass their first health check."
@@ -434,6 +454,14 @@ argocd-install: ## Install ArgoCD into the cluster (one-time)
 .PHONY: argocd-app
 argocd-app: ## Render this workspace's Application from platform.<ws>.env and apply it
 	@scripts/argocd-app.sh $(WORKSPACE)
+
+.PHONY: argocd-expose
+argocd-expose: ## Serve the ArgoCD UI at https://<site>/argocd, restricted to ADMIN_ALLOWED_CIDRS
+	@scripts/argocd-expose.sh $(WORKSPACE)
+
+.PHONY: argocd-unexpose
+argocd-unexpose: ## Take the UI back off the load balancer (port-forward only)
+	@scripts/argocd-expose.sh $(WORKSPACE) --remove
 
 .PHONY: argocd-password
 argocd-password: ## Print the initial ArgoCD admin password
