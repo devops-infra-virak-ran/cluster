@@ -74,6 +74,47 @@ the same path the services already take, and the worker security group opens
 the NodePort range to the load balancer alone — but it is worth knowing before
 this pattern is copied to an environment that matters.
 
+## How CI deploys
+
+The app repositories map a branch to an environment, build an image, and push
+it to ECR. The last stage commits the new tag here — that commit is the deploy,
+because ArgoCD runs whatever tag this repo holds.
+
+```
+frontend/auth/core repo          this repo                     cluster
+─────────────────────────────    ──────────────────────────    ──────────────
+develop  → dev     build+push →  helm/env/dev.yaml     tag  →  auto-sync
+testing  → staging build+push →  helm/env/staging.yaml tag  →  auto-sync
+main/vX  → prod    approve,   →  helm/env/prod.yaml    tag  →  waits for you
+                   build+push
+```
+
+One branch, one file per environment. Promotion is a tag moving from one file
+to the next, which is a one-line diff in a pull request — not a merge that
+carries every other difference between two long-lived branches along with it.
+
+`dev` and `staging` carry `syncPolicy.automated`, so a commit reaches them by
+itself. `prod` does not: the commit lands and waits for `make argocd-sync
+WORKSPACE=prod`, which is the second gate behind the approval CI already asks
+for. `scripts/argocd-app.sh` decides that from the workspace name —
+`AUTOMATED_WORKSPACES` overrides it.
+
+Moving a tag by hand is the same operation:
+
+```bash
+make svc-tag NAME=client-side TAG=dev-a1b2c3d4 WORKSPACE=dev
+```
+
+It edits the file as text so the comments survive, refuses a service that has
+no entry rather than inventing one, and does nothing when the tag is already
+what you asked for — which is what keeps a rebuild of an unchanged commit from
+producing an empty commit.
+
+CI needs one Jenkins credential: `github-cluster-repo`, a username/password
+pair whose password is a GitHub token with **write** access to this repository.
+That is the only new secret — the image push already uses the CI box's instance
+profile.
+
 ## How the pieces fit
 
 ```

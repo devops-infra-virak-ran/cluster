@@ -305,6 +305,12 @@ cluster-down: ## Delete what Kubernetes created in AWS — run this BEFORE destr
 services: ## List the catalogue for this workspace, and which files override it
 	@scripts/service.sh list $(WORKSPACE)
 
+.PHONY: svc-tag
+svc-tag: ## Point a service at an image tag: make svc-tag NAME=client-side TAG=dev-a1b2c3d4
+	@test -n "$(NAME)" -a -n "$(TAG)" || { \
+	  echo "usage: make svc-tag NAME=<service> TAG=<image-tag> WORKSPACE=<env>"; exit 1; }
+	@scripts/service.sh set-tag "$(WORKSPACE)" "$(NAME)" "$(TAG)"
+
 .PHONY: svc-add
 svc-add: ## Add a service: make svc-add NAME=payments-api GROUP=api-service TAG=0.1.0
 	@test -n "$(NAME)" -a -n "$(GROUP)" -a -n "$(TAG)" || { \

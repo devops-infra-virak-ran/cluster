@@ -29,6 +29,7 @@ usage() {
 usage: $(basename "$0") add <name> <group> --tag T [--route R] [--repo R] [--replicas N]
        $(basename "$0") rm  <name>
        $(basename "$0") list
+       $(basename "$0") set-tag <workspace> <service> <tag>
 
 groups: $(ls -d "${VALUES}"/*/ 2>/dev/null | xargs -n1 basename | tr '\n' ' ')
 USAGE
@@ -44,8 +45,20 @@ find_service() {
 }
 
 # Restore the file and fail loudly if an edit produced something unparseable.
+#
+# PyYAML is not everywhere — a CI container running set-tag typically has a
+# bare python3 and nothing else. A missing parser is not a failed edit, so it
+# degrades to saying the check was skipped rather than failing the build. It
+# still fails hard when the parser IS there and the file does not parse.
 verify() {
   local file="$1" backup="$2"
+
+  if ! python3 -c "import yaml" 2>/dev/null; then
+    echo "   note: PyYAML not installed — skipped the parse check on ${file##*/}" >&2
+    rm -f "${backup}"
+    return 0
+  fi
+
   if ! python3 -c "import yaml,sys; yaml.safe_load(open(sys.argv[1]))" "${file}" 2>/dev/null; then
     mv "${backup}" "${file}"
     echo "error: the edit produced invalid YAML; ${file} was left unchanged." >&2
@@ -288,9 +301,86 @@ if orphans:
 PYEOF
 }
 
+# Point one service at a different image tag, in one environment.
+#
+# This is the deploy, in a GitOps setup: ArgoCD runs whatever tag is committed
+# here, so moving this line and pushing is what ships a build. CI calls it
+# after the image reaches the registry.
+#
+# Edited as text, like everything else in this file — the comments in an env
+# file explain why a service is pinned where it is, and a parse-and-rewrite
+# would drop them.
+cmd_set_tag() {
+  local workspace="${1:-}" name="${2:-}" tag="${3:-}"
+  [[ -n "${workspace}" && -n "${name}" && -n "${tag}" ]] || {
+    echo "usage: $(basename "$0") set-tag <workspace> <service> <tag>" >&2
+    exit 1; }
+
+  local file="${ENVS}/${workspace}.yaml"
+  [[ -f "${file}" ]] || {
+    echo "error: no ${file#${ROOT}/} — environments are: $(ls "${ENVS}"/*.yaml 2>/dev/null \
+      | xargs -n1 basename | sed 's/.yaml//' | tr '\n' ' ')" >&2
+    exit 1; }
+
+  local backup="${file}.bak"
+  cp "${file}" "${backup}"
+
+  set +e
+  python3 - "${file}" "${name}" "${tag}" <<'PYEOF'
+import re, sys
+
+path, name, tag = sys.argv[1:4]
+lines = open(path).read().splitlines(True)
+
+# Services sit six spaces deep (groups > <group> > services > <name>). Anything
+# shallower than eight spaces ends the block: the next service, or the next
+# group. Keys belonging to this service are deeper and cannot match.
+service = re.compile(r'^ {6}%s:\s*$' % re.escape(name))
+sibling = re.compile(r'^ {2,6}\S')
+tagline = re.compile(r'^(\s*image:\s*\{\s*tag:\s*")([^"]*)("\s*\}\s*)$')
+
+start = next((i for i, l in enumerate(lines) if service.match(l)), None)
+if start is None:
+    sys.exit("error: '%s' has no entry in %s.\n"
+             "       Every environment needs one; add it with `make svc-add`." % (name, path))
+
+old = None
+for i in range(start + 1, len(lines)):
+    if sibling.match(lines[i]):
+        break
+    m = tagline.match(lines[i])
+    if m:
+        old, lines[i] = m.group(2), m.group(1) + tag + m.group(3)
+        break
+
+if old is None:
+    sys.exit("error: '%s' in %s has no `image: { tag: ... }` line.\n"
+             "       Without a pinned tag it would deploy :latest, which cannot be "
+             "rolled back." % (name, path))
+
+# Written only on a real change, so CI does not produce empty commits when a
+# branch is rebuilt without the image changing.
+if old == tag:
+    print("   unchanged  %s is already %s" % (name, tag))
+    sys.exit(0)
+
+open(path, 'w').writelines(lines)
+print("   %s  %s -> %s" % (name, old, tag))
+PYEOF
+  local rc=$?
+  set -e
+
+  if [[ ${rc} -ne 0 ]]; then
+    mv "${backup}" "${file}"
+    exit 1
+  fi
+  verify "${file}" "${backup}"
+}
+
 case "${1:-}" in
-  add)  shift; cmd_add "$@" ;;
-  rm)   shift; cmd_rm "$@" ;;
-  list) shift; cmd_list "${1:-dev}" ;;
+  add)     shift; cmd_add "$@" ;;
+  rm)      shift; cmd_rm "$@" ;;
+  list)    shift; cmd_list "${1:-dev}" ;;
+  set-tag) shift; cmd_set_tag "$@" ;;
   *) usage ;;
 esac

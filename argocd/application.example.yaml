@@ -12,6 +12,7 @@
 #   __TARGET_REVISION__    branch/tag
 #   __ECR_IMAGE_PREFIX__   global.imageRegistry  (carries the account id)
 #   __ALB_URL__            global.ingress.url
+#   __AUTOMATED__          the syncPolicy.automated block, or nothing for prod
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
@@ -48,10 +49,12 @@ spec:
     server: https://kubernetes.default.svc
     namespace: apps
 
-  # Manual sync: ArgoCD shows drift but does not act until you sync, so it does
-  # not fight `make helm-deploy` while both exist. Turn on automation later by
-  # adding an `automated:` block here.
+  # Whether ArgoCD acts on drift by itself is decided per environment, by the
+  # render: dev and staging follow git as soon as CI commits a tag, prod waits
+  # for someone to sync it. A production deploy stays a deliberate act even
+  # though the commit that enables it is automatic.
   syncPolicy:
+    # __AUTOMATED__
     syncOptions:
       - CreateNamespace=true
       - ApplyOutOfSyncOnly=true
