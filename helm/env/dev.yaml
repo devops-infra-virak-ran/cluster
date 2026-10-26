@@ -29,7 +29,7 @@ groups:
   web-service:
     services:
       client-side:
-        image: { tag: "prod.v1.0.7" }
+        image: { tag: "1.0.7-12-gd3cef94" }
         autoscaling:
           enabled: true
           minReplicas: 1
