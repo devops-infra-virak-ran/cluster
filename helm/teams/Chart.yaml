@@ -1,0 +1,15 @@
+apiVersion: v2
+name: teams
+description: >-
+  One namespace per team, and the guardrails around it: a ResourceQuota, a
+  LimitRange, RBAC for the team's IAM identity, NetworkPolicies, and the
+  External Secrets wiring that fills the team's app-env Secret. The platform
+  installs this; teams cannot change it — their Argo CD projects deny these
+  kinds.
+
+type: application
+version: 1.0.0
+appVersion: "1.0.0"
+
+maintainers:
+  - name: virak

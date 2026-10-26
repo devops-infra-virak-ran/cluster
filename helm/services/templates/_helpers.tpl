@@ -62,6 +62,10 @@ the same way and none of them repeat the merge:
 
 Each service also gets a `group` key, which becomes its component label.
 
+global.groups, when set, limits this to the named groups. A team's release
+renders its own services only, even though the environment file it is given
+names every team's tags.
+
 deepCopy matters: sprig's mergeOverwrite mutates its first argument, so
 without it the first service rendered would permanently absorb its own
 overrides into the shared defaults and every later service would inherit
@@ -73,7 +77,9 @@ resolves collisions the other way around.
 {{- define "services.all" -}}
 {{- $root := . -}}
 {{- $out := dict -}}
+{{- $only := $root.Values.global.groups | default list -}}
 {{- range $group, $g := $root.Values.groups -}}
+  {{- if or (not $only) (has $group $only) -}}
   {{- range $name, $cfg := ($g.services | default dict) -}}
     {{- if hasKey $out $name -}}
       {{- fail (printf "service %q is defined in more than one group; names must be unique across groups" $name) -}}
@@ -102,6 +108,7 @@ resolves collisions the other way around.
       {{- $_ := set $merged "route" (printf "%s/%s" (trimSuffix "/" $merged.routePrefix) $name) -}}
     {{- end -}}
     {{- $_ := set $out $name $merged -}}
+  {{- end -}}
   {{- end -}}
 {{- end -}}
 {{- $out | toYaml -}}

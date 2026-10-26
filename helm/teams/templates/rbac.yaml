@@ -1,0 +1,33 @@
+{{/*
+The team's own people may change anything in their namespace, and nothing
+outside it.
+
+The subject is a Kubernetes group, not an IAM ARN. Terraform's EKS access
+entry for each team principal (var.team_access) sets
+kubernetes_groups = ["team:<name>"], so whoever assumes that IAM role arrives
+in this group. Who belongs to a team is decided in IAM; what the team may do
+is decided here.
+
+`edit` cannot read or change Roles, RoleBindings, ResourceQuotas or
+LimitRanges, so a team cannot widen its own access or lift its own quota.
+*/}}
+{{- $all := include "teams.all" $ | fromYaml }}
+{{- range $name, $t := $all }}
+{{- $ctx := dict "root" $ "name" $name }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: team-{{ $name }}
+  namespace: {{ $name }}
+  labels:
+    {{- include "teams.labels" $ctx | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ $t.rbac.clusterRole }}
+subjects:
+  - apiGroup: rbac.authorization.k8s.io
+    kind: Group
+    name: team:{{ $name }}
+{{- end }}

@@ -1,32 +1,52 @@
 # ─── prod ────────────────────────────────────────────────────────────────────
-# Three of everything, four of core-api: one replica per AZ, so losing a
-# datacentre costs a third of the capacity rather than the service.
+# Three of everything at minimum: one replica per AZ, so losing a datacentre
+# costs a third of the capacity rather than the service.
 #
 # Merged LAST, on top of helm/values/<group>/services.yaml, so anything named
 # here wins:
 #
-#   make helm-deploy WORKSPACE=prod
-#     -f helm/values/api-service/services.yaml    the catalogue
-#     -f helm/values/web-service/services.yaml
-#     -f helm/env/prod.yaml                       this file
+#   -f helm/values/<team>/services.yaml    the catalogue
+#   -f helm/env/prod.yaml                  this file
 #
-# Read this next to dev.yaml. The tags are the point: promoting a build to prod
+# Read this next to uat.yaml. The tags are the point: promoting a build to prod
 # is a change to one line in this file, reviewed on its own, with the version
-# it replaces visible in the diff.
+# it replaces visible in the diff. Argo CD does not sync prod by itself — the
+# merged commit waits for `make argocd-sync WORKSPACE=prod`.
+#
+# Rolling back is the same operation backwards: `git revert` the promotion
+# commit, then sync. See docs/release.md.
 
 groups:
   api-service:
     services:
       auth-api:
-        image: { tag: "0.1.0" }
-        replicas: 3
+        image: { tag: "prod.v3.0.5" }
+        autoscaling:
+          enabled: true
+          minReplicas: 3
+          maxReplicas: 6
+          targetCPUUtilizationPercentage: 70
 
       core-api:
-        image: { tag: "0.1.0" }
-        replicas: 4
+        image: { tag: "prod.v2.0.2" }
+        autoscaling:
+          enabled: true
+          minReplicas: 3
+          maxReplicas: 8
+          targetCPUUtilizationPercentage: 70
 
   web-service:
     services:
       client-side:
-        image: { tag: "0.1.0" }
-        replicas: 3
+        image: { tag: "prod.v1.0.7" }
+        autoscaling:
+          enabled: true
+          minReplicas: 3
+          maxReplicas: 6
+          targetCPUUtilizationPercentage: 70
+
+teams:
+  api-service:
+    quota: { cpu: "6", memory: 12Gi, pods: "50" }
+  web-service:
+    quota: { cpu: "3", memory: 6Gi, pods: "25" }

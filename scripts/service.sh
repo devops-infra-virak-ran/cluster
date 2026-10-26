@@ -12,10 +12,9 @@
 # most of what those files are for. Every edit is checked afterwards: if the
 # result does not parse, the original is restored.
 #
-# `add` and `rm` touch the catalogue — helm/values/<group>/services.yaml — which
-# is also where Terraform reads service names from to create ECR repositories.
-# A new service still needs its tag and replicas in helm/env/<workspace>.yaml,
-# and a `make apply` to get its registry.
+# `add` and `rm` touch the catalogue — helm/values/<group>/services.yaml — and
+# every helm/env/<workspace>.yaml. A new service still needs its ECR
+# repository: add the name to var.services in terraform/global/ and apply.
 
 set -euo pipefail
 
@@ -30,6 +29,7 @@ usage: $(basename "$0") add <name> <group> --tag T [--route R] [--repo R] [--rep
        $(basename "$0") rm  <name>
        $(basename "$0") list
        $(basename "$0") set-tag <workspace> <service> <tag>
+       $(basename "$0") get-tag <workspace> <service> [file]
 
 groups: $(ls -d "${VALUES}"/*/ 2>/dev/null | xargs -n1 basename | tr '\n' ' ')
 USAGE
@@ -93,8 +93,8 @@ cmd_add() {
     echo "error: '${name}' already exists in ${existing#${ROOT}/}" >&2; exit 1; }
 
   # Without a tag the service falls back to the chart's `tag: latest`, which
-  # cannot be rolled back — the check that used to live on the Terraform
-  # variable, now that the catalogue is Helm's.
+  # cannot be rolled back — and ECR's immutable tags would refuse to push a
+  # second :latest anyway.
   [[ -n "${tag}" ]] || {
     echo "error: --tag is required. A service with no pinned tag deploys :latest," >&2
     echo "       and there is no earlier tag to roll back to." >&2; exit 1; }
@@ -140,7 +140,8 @@ cmd_add() {
   done
 
   echo "    review it:  make services WORKSPACE=<env>"
-  echo "    registry:   make apply WORKSPACE=<env>       # creates its ECR repo"
+  echo "    registry:   add it to var.services in ../terraform/global, then"
+  echo "                make -C ../terraform global-apply  # creates its ECR repo"
   echo "    apply it:   make helm-deploy WORKSPACE=<env>"
 }
 
@@ -268,8 +269,7 @@ def services(doc):
         for name, cfg in ((gv or {}).get("services") or {}).items():
             yield group, name, cfg or {}
 
-# The catalogue is which services exist at all. Helm's group files own it, and
-# Terraform reads the same files to decide which ECR repositories to create.
+# The catalogue is which services exist at all. Helm's group files own it.
 catalogue = {}
 for path in sorted(glob.glob(os.path.join(values_dir, "*", "*.yaml"))):
     for group, name, cfg in services(load(path)):
@@ -377,7 +377,40 @@ PYEOF
   verify "${file}" "${backup}"
 }
 
+# Print the image tag one service runs in one environment — what promotion
+# copies and what a rollback restores. The same match set-tag uses, so the two
+# can never disagree about which line is the tag. [file] reads another copy of
+# the env file, such as one extracted from an older commit.
+cmd_get_tag() {
+  local workspace="${1:-}" name="${2:-}" file="${3:-}"
+  [[ -n "${workspace}" && -n "${name}" ]] || {
+    echo "usage: $(basename "$0") get-tag <workspace> <service> [file]" >&2; exit 1; }
+  file="${file:-${ENVS}/${workspace}.yaml}"
+  [[ -f "${file}" ]] || { echo "error: no ${file}" >&2; exit 1; }
+
+  python3 - "${file}" "${name}" <<'GETTAG'
+import re, sys
+path, name = sys.argv[1:3]
+service = re.compile(r'^ {6}%s:\s*$' % re.escape(name))
+sibling = re.compile(r'^ {2,6}\S')
+tagline = re.compile(r'^\s*image:\s*\{\s*tag:\s*"([^"]*)"\s*\}\s*$')
+lines = open(path).read().splitlines()
+start = next((i for i, l in enumerate(lines) if service.match(l)), None)
+if start is None:
+    sys.exit("error: '%s' has no entry in %s" % (name, path))
+for l in lines[start + 1:]:
+    if sibling.match(l):
+        break
+    m = tagline.match(l)
+    if m:
+        print(m.group(1))
+        sys.exit(0)
+sys.exit("error: '%s' in %s has no image tag line" % (name, path))
+GETTAG
+}
+
 case "${1:-}" in
+  get-tag) shift; cmd_get_tag "$@" ;;
   add)     shift; cmd_add "$@" ;;
   rm)      shift; cmd_rm "$@" ;;
   list)    shift; cmd_list "${1:-dev}" ;;

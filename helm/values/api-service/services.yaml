@@ -1,6 +1,8 @@
 # ─── api-service ─────────────────────────────────────────────────────────────
-# Backend services. Every API in this file inherits `defaults` below, which in
-# turn inherits the chart's own defaults in helm/services/values.yaml.
+# The backend team. Deploys into the `api-service` namespace, through its own
+# Argo CD Application and AppProject. Every API in this file inherits
+# `defaults` below, which in turn inherits the chart's own defaults in
+# helm/services/values.yaml.
 #
 #   add a service     append a block under `services:`  (make svc-add)
 #   remove a service  delete its block                  (make svc-rm)
@@ -10,37 +12,41 @@
 # from the two tiers above it.
 #
 # This file is the catalogue: it says which APIs exist and what is true about
-# them in every environment. Terraform reads the service names out of it to
-# create their ECR repositories, so a service added here gets a registry on the
-# next `make apply`.
+# them in every environment. Its ECR repository is Terraform's — add the name
+# to var.services in terraform/global/ too, or the first push has nowhere to go.
 #
-# What differs per environment — image tags and replica counts — is NOT here.
+# What differs per environment — image tags, replicas, scaling — is NOT here.
 # It lives in helm/env/<workspace>.yaml, which merges on top of this file.
 
 groups:
   api-service:
     # ─── Defaults for every API ──────────────────────────────────────────────
     defaults:
-      # With a routePrefix set, a service that does not name a route gets
-      # <routePrefix>/<its own name>. That plus image.repository defaulting to
-      # the service name is why an entry can be a single line.
-      routePrefix: /api
-
-      # APIs are mounted under a path prefix and serve from their own root, so
-      # the prefix is stripped before the request reaches the app.
-      rewrite: /
       probes:
         path: /health
         readyPath: /health/ready
 
+      # DB credentials, JWT secret. External Secrets fills app-env in this
+      # namespace from the team's Secrets Manager secret (make secret-push).
+      envFrom:
+        - secretRef: { name: app-env }
+
     # ─── The services ────────────────────────────────────────────────────────
     services:
+      # Public at /api/auth. The app serves that prefix itself, so the ALB
+      # forwards the path untouched — no rewrite.
       auth-api:
+        route: /api/auth
         env:
           CORS_ORIGIN: "*"
 
-      # The application API. Calls auth-api over cluster DNS.
+      # The application API. Internal only: no route, so no Ingress — other
+      # pods reach it at its Service name, the browser never does.
       core-api:
+        probes:
+          path: /api/health
+          readyPath: /api/health
+
         # Busier than the others in every environment, so the bump belongs
         # here rather than repeated in each env file. Everything not named
         # still comes from the tiers above — cpu stays 100m, the memory limit
@@ -50,6 +56,7 @@ groups:
             memory: 384Mi
 
         env:
-          # The Service name, not the ALB: this call never leaves the cluster.
-          AUTH_SERVICE_URL: http://auth-api:80
+          # The Service name, not the ALB: this call never leaves the
+          # namespace. Services are named <release>-<service>.
+          AUTH_SERVICE_URL: http://apps-auth-api:80
           CORS_ORIGIN: "*"

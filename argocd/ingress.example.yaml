@@ -1,16 +1,17 @@
-# ArgoCD web UI — served at https://<site>/argocd, through the same ALB and
-# ingress controller the services already use.
+# Argo CD web UI — at https://argocd.<site_hostname>, on the environment's
+# shared ALB, for ADMIN_ALLOWED_CIDRS only.
 #
 # This is the template. Do not apply it directly: the hostname and the allowed
-# CIDRs are per-environment facts, and this repository is public. Render a
-# filled-in copy:
+# CIDRs are per-environment facts, and this repository is public. Render it:
 #
-#   make argocd-expose WORKSPACE=dev   # writes argocd/ingress-dev.yaml (gitignored) and applies it
+#   make argocd-expose WORKSPACE=dev   # writes argocd/ingress-<ws>.yaml (gitignored) and applies it
 #
-# Placeholders replaced by the render:
-#   __WORKSPACE__       the environment name
-#   __HOSTNAME__        the host the ALB certificate covers
-#   __ALLOWED_CIDRS__   comma-separated CIDRs allowed to reach the UI
+# Placeholders: __WORKSPACE__ __HOSTNAME__ __ALB_GROUP__ __CERT_ARN__
+#               __ALLOWED_CIDRS_JSON__  (a JSON list of CIDR strings)
+#
+# A host of its own rather than a path under the site: Argo CD then serves at
+# /, with no rootpath to keep in step. The wildcard certificate Terraform
+# issued for *.<site_hostname> covers it, and external-dns publishes it.
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
@@ -21,29 +22,33 @@ metadata:
     app.kubernetes.io/part-of: argocd
     workspace: __WORKSPACE__
   annotations:
-    # Plain HTTP to the backend. argocd-expose sets server.insecure, so
-    # argocd-server serves the UI over HTTP and TLS terminates at the ALB.
-    # Without that pair this must be HTTPS, or nginx gets a TLS handshake
-    # error from a server that is speaking HTTPS on port 80.
-    nginx.ingress.kubernetes.io/backend-protocol: "HTTP"
+    alb.ingress.kubernetes.io/group.name: __ALB_GROUP__
+    # Before every team rule, so its host match is evaluated first.
+    alb.ingress.kubernetes.io/group.order: "10"
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}, {"HTTPS": 443}]'
+    alb.ingress.kubernetes.io/ssl-redirect: "443"
+    alb.ingress.kubernetes.io/ssl-policy: ELBSecurityPolicy-TLS13-1-2-2021-06
+    alb.ingress.kubernetes.io/certificate-arn: __CERT_ARN__
+    alb.ingress.kubernetes.io/healthcheck-path: /healthz
+    alb.ingress.kubernetes.io/success-codes: "200"
 
-    # No rewrite-target on purpose. ArgoCD is told to serve itself under
-    # /argocd (server.rootpath), so it expects to receive the prefix. Stripping
-    # it here would load the page and then 404 every asset underneath it.
-
-    # Who may reach the admin UI. This compares against the REAL client
-    # address, which only works because the controller is configured to trust
-    # the ALB's X-Forwarded-For (use-forwarded-headers, set by `make ingress`).
-    # Without that, nginx compares against the ALB's private IP, matches
-    # nothing, and returns 403 to everyone — including you.
-    nginx.ingress.kubernetes.io/whitelist-source-range: "__ALLOWED_CIDRS__"
+    # Who may reach the admin UI — an extra condition on this one rule, NOT
+    # inbound-cidrs. inbound-cidrs is a property of the load balancer, and
+    # this ALB is shared: it would lock the whole site to these addresses.
+    # A request from anywhere else matches no rule and gets the ALB's 404.
+    #
+    # The key after `conditions.` must be the backend Service's name.
+    alb.ingress.kubernetes.io/conditions.argocd-server: >
+      [{"field": "source-ip", "sourceIpConfig": {"values": __ALLOWED_CIDRS_JSON__}}]
 spec:
-  ingressClassName: nginx
+  ingressClassName: alb
   rules:
     - host: __HOSTNAME__
       http:
         paths:
-          - path: /argocd
+          - path: /
             pathType: Prefix
             backend:
               service:

@@ -1,0 +1,49 @@
+{{/*
+Who may open a connection to a team's pods. Enforced by the VPC CNI's network
+policy agent (enableNetworkPolicy in terraform/modules/eks/addons.tf).
+
+Once any policy selects a pod, everything not allowed by some policy is
+dropped. One policy per namespace, allowing:
+
+  - pods in the same namespace
+  - the ALB, from the public subnets — target-type ip connects to pods
+    directly, so without this every Ingress returns 502
+  - the namespaces in the team's allowFrom
+  - kube-system, for metrics-server scraping and the like
+
+Egress is left open: the services reach Neon Postgres and other APIs on the
+internet through the NAT gateway.
+*/}}
+{{- if .Values.global.networkPolicies }}
+{{- $all := include "teams.all" $ | fromYaml }}
+{{- $albCidrs := splitList "," .Values.global.albSourceCidrs | compact }}
+{{- range $name, $t := $all }}
+{{- $ctx := dict "root" $ "name" $name }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: team-ingress
+  namespace: {{ $name }}
+  labels:
+    {{- include "teams.labels" $ctx | nindent 4 }}
+spec:
+  podSelector: {}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector: {}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+        {{- range $t.allowFrom }}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ . }}
+        {{- end }}
+        {{- range $albCidrs }}
+        - ipBlock:
+            cidr: {{ trim . }}
+        {{- end }}
+{{- end }}
+{{- end }}

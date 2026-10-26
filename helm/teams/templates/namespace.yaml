@@ -1,0 +1,70 @@
+{{/*
+The namespace, its quota and its default limits.
+
+pod-security enforce=baseline: no privileged pods, no host networking or host
+paths. restricted is only warned on, because the services already meet it
+(runAsNonRoot, no privilege escalation, all capabilities dropped) but a team
+adding a third-party image may not on day one.
+*/}}
+{{- $all := include "teams.all" $ | fromYaml }}
+{{- range $name, $t := $all }}
+{{- $ctx := dict "root" $ "name" $name }}
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "teams.labels" $ctx | nindent 4 }}
+    kubernetes.io/metadata.name: {{ $name }}
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/warn: restricted
+    # The load balancer controller adds a readiness gate to every pod here: a
+    # new pod is not Ready until the ALB has registered it AND it passed the
+    # ALB's health check. A rollout therefore never removes an old pod while
+    # its replacement is still unreachable from outside — the gap that shows
+    # up as a burst of 502s on every deploy without it.
+    elbv2.k8s.aws/pod-readiness-gate-inject: enabled
+  annotations:
+    # Deleting this release must not delete a team's namespace and everything
+    # in it. Remove the namespace deliberately, with kubectl.
+    helm.sh/resource-policy: keep
+---
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: team-quota
+  namespace: {{ $name }}
+  labels:
+    {{- include "teams.labels" $ctx | nindent 4 }}
+spec:
+  hard:
+    requests.cpu: {{ $t.quota.cpu | quote }}
+    requests.memory: {{ $t.quota.memory | quote }}
+    {{- with $t.quota.limitsMemory }}
+    limits.memory: {{ . | quote }}
+    {{- end }}
+    pods: {{ $t.quota.pods | quote }}
+    services: {{ $t.quota.services | quote }}
+    persistentvolumeclaims: {{ $t.quota.persistentvolumeclaims | quote }}
+    # A Service of type LoadBalancer creates an NLB outside the shared ALB, at
+    # ~$16/month each. Ingress is the way in; this makes it the only way.
+    services.loadbalancers: "0"
+---
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: team-defaults
+  namespace: {{ $name }}
+  labels:
+    {{- include "teams.labels" $ctx | nindent 4 }}
+spec:
+  limits:
+    - type: Container
+      defaultRequest:
+        {{- toYaml $t.limits.defaultRequest | nindent 8 }}
+      default:
+        {{- toYaml $t.limits.default | nindent 8 }}
+      max:
+        {{- toYaml $t.limits.max | nindent 8 }}
+{{- end }}

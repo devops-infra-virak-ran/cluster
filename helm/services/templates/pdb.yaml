@@ -1,0 +1,30 @@
+{{/*
+One PodDisruptionBudget per service that runs more than one pod.
+
+A voluntary disruption — Cluster Autoscaler removing an idle node, the node
+group rolling onto a new AMI, `kubectl drain` — evicts pods one at a time and
+waits while that would take a service below minAvailable. Without this, a
+drain can evict every replica of a service at once.
+
+Skipped below two pods. With one replica and minAvailable 1 the budget allows
+zero evictions, and the drain that needed it hangs until someone deletes it.
+*/}}
+{{- $all := include "services.all" $ | fromYaml }}
+{{- range $name, $svc := $all }}
+{{- $min := ternary $svc.autoscaling.minReplicas $svc.replicas (and $svc.autoscaling $svc.autoscaling.enabled) | int }}
+{{- if and $svc.enabled $svc.pdb $svc.pdb.enabled (ge $min 2) }}
+{{- $ctx := dict "root" $ "name" $name "svc" $svc }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "services.name" $ctx }}
+  labels:
+    {{- include "services.labels" $ctx | nindent 4 }}
+spec:
+  minAvailable: {{ $svc.pdb.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "services.selectorLabels" $ctx | nindent 6 }}
+{{- end }}
+{{- end }}

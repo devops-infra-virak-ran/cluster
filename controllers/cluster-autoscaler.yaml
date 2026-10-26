@@ -1,0 +1,50 @@
+# Cluster Autoscaler — adds a node when pods cannot be scheduled, removes one
+# that has been mostly idle for 10 minutes.
+#
+#   chart  cluster-autoscaler 9.59.0   (kubernetes/autoscaler)
+#   app    v1.36.1 — the autoscaler's minor version must match the cluster's
+#          Kubernetes minor, so the image is set here rather than taking the
+#          chart's default (v1.35.0)
+#
+# It resizes the managed node group's Auto Scaling group within the node
+# group's own min and max (terraform env/<ws>.tfvars node_min_size /
+# node_max_size), found by the tags EKS puts on it. `make controllers` passes
+# the cluster name and region.
+#
+# The HPA scales pods; this scales nodes for the pods the HPA added. Watch both
+# during a load test:
+#
+#   kubectl get hpa -A -w
+#   kubectl -n kube-system logs deploy/cluster-autoscaler -f | grep -E 'scale-up|scale-down'
+
+cloudProvider: aws
+
+image:
+  tag: v1.36.1
+
+rbac:
+  serviceAccount:
+    create: true
+    name: cluster-autoscaler
+
+fullnameOverride: cluster-autoscaler
+
+extraArgs:
+  logtostderr: true
+  stderrthreshold: info
+  v: 2
+  # Pick the node group that wastes least — irrelevant with one group, right
+  # the moment a second is added.
+  expander: least-waste
+  # Do not count DaemonSet pods when deciding a node is idle; every node runs
+  # the same set of them.
+  skip-nodes-with-system-pods: false
+  balance-similar-node-groups: true
+  # How long a node must be underused before it is removed. Short enough to
+  # see happen during a demo, long enough not to flap.
+  scale-down-unneeded-time: 5m
+  scale-down-delay-after-add: 5m
+
+resources:
+  requests: { cpu: 50m, memory: 128Mi }
+  limits: { memory: 512Mi }

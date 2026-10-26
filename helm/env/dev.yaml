@@ -1,34 +1,30 @@
+# ─── dev ─────────────────────────────────────────────────────────────────────
+# Where every build lands first. One replica minimum, scaling to three.
+#
+# Merged LAST, on top of helm/values/<group>/services.yaml, so anything named
+# here wins. CI moves the tags (make svc-tag); promotion to uat is the same tag
+# copied into uat.yaml — the identical image, never a rebuild.
+#
+# `teams:` at the bottom sizes each team's namespace (helm/teams).
+
 groups:
   api-service:
     services:
       auth-api:
-        enabled: true
         image: { tag: "prod.v3.0.5" }
         autoscaling:
           enabled: true
           minReplicas: 1
           maxReplicas: 3
           targetCPUUtilizationPercentage: 70
-        route: /api/auth
-        rewrite: null
-        envFrom:
-          - secretRef: { name: app-env }
 
       core-api:
-        enabled: true
         image: { tag: "prod.v2.0.2" }
         autoscaling:
           enabled: true
           minReplicas: 1
           maxReplicas: 3
           targetCPUUtilizationPercentage: 70
-        route: null
-        routePrefix: null
-        probes:
-          path: /api/health
-          readyPath: /api/health
-        envFrom:
-          - secretRef: { name: app-env }
 
   web-service:
     services:
@@ -39,5 +35,12 @@ groups:
           minReplicas: 1
           maxReplicas: 3
           targetCPUUtilizationPercentage: 70
-        envFrom:
-          - secretRef: { name: app-env }
+
+# ─── Team namespaces ─────────────────────────────────────────────────────────
+# What each team may use in this environment. See helm/teams/values.yaml.
+
+teams:
+  api-service:
+    quota: { cpu: "2", memory: 4Gi, pods: "20" }
+  web-service:
+    quota: { cpu: "1", memory: 2Gi, pods: "10" }

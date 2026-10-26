@@ -5,50 +5,94 @@ A service with no `route` is cluster-internal: reachable by other pods at its
 Service name, unreachable from outside. That is the right default — only the
 services that should be public say so.
 
-This cluster has no cloud controller manager, so Service type=LoadBalancer
-would stay Pending forever. Traffic arrives at the ALB, which forwards to the
-ingress controller's NodePort, and these rules do the routing from there.
+These are not routed by anything inside the cluster. The AWS Load Balancer
+Controller turns each one into listener rules on a real ALB, and every Ingress
+naming the same global.ingress.group shares that one ALB — across namespaces,
+so all teams in an environment sit behind one load balancer and one hostname.
+target-type ip sends traffic straight to the pod IPs; there is no NodePort and
+no proxy hop.
+
+external-dns reads the same host and points it at the ALB.
 */}}
 {{- if .Values.global.ingress.enabled }}
 {{- $all := include "services.all" $ | fromYaml }}
+{{- $ing := .Values.global.ingress }}
 {{- range $name, $svc := $all }}
 {{- if and $svc.enabled $svc.service.enabled $svc.route }}
 {{- $ctx := dict "root" $ "name" $name "svc" $svc }}
+{{- $backend := include "services.name" $ctx }}
+{{- $route := $svc.route | trimSuffix "/" | default "/" }}
 ---
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: {{ include "services.name" $ctx }}
+  name: {{ $backend }}
   labels:
     {{- include "services.labels" $ctx | nindent 4 }}
   annotations:
-    {{- if $svc.rewrite }}
+    {{- with $ing.group }}
+    alb.ingress.kubernetes.io/group.name: {{ . | quote }}
+    {{- end }}
     {{/*
-      The app is mounted at /api/auth but serves /. The capture group in the
-      path below is what $1 refers to; without the regex the rewrite has
-      nothing to substitute and every request lands on the target verbatim.
+      "/" matches every path, so on a shared ALB it has to be evaluated last
+      or it swallows /api/* too. Lower numbers are evaluated first.
     */}}
-    nginx.ingress.kubernetes.io/rewrite-target: {{ $svc.rewrite }}$1
-    nginx.ingress.kubernetes.io/use-regex: "true"
+    alb.ingress.kubernetes.io/group.order: {{ $svc.ingressOrder | default (ternary 1000 100 (eq $route "/")) | quote }}
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+    {{- if $ing.host }}
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}, {"HTTPS": 443}]'
+    alb.ingress.kubernetes.io/ssl-redirect: "443"
+    alb.ingress.kubernetes.io/ssl-policy: {{ $ing.sslPolicy | quote }}
+    {{- with $ing.certificateArn }}
+    alb.ingress.kubernetes.io/certificate-arn: {{ . | quote }}
+    {{- end }}
+    {{- else }}
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}]'
+    {{- end }}
+    {{/*
+      The ALB's own health check, separate from the kubelet's probes. It hits
+      the pod directly, so it uses the readiness path: a pod that is not ready
+      is taken out of the target group as well as out of the Service.
+    */}}
+    alb.ingress.kubernetes.io/healthcheck-path: {{ $svc.probes.readyPath | default $svc.probes.path | quote }}
+    alb.ingress.kubernetes.io/healthcheck-interval-seconds: "10"
+    alb.ingress.kubernetes.io/healthy-threshold-count: "2"
+    alb.ingress.kubernetes.io/unhealthy-threshold-count: "2"
+    alb.ingress.kubernetes.io/success-codes: "200-399"
+    {{/*
+      Old targets drain for 30s, not the 300s default, so a rollout or a
+      rollback finishes in seconds rather than five minutes.
+    */}}
+    alb.ingress.kubernetes.io/target-group-attributes: deregistration_delay.timeout_seconds=30
+    {{- if and $svc.rewrite (ne $route "/") }}
+    {{/*
+      The app is mounted at /api/auth but serves from its own root. The ALB
+      strips the prefix before forwarding:
+        /api/auth/login → /login     /api/auth → /
+      The annotation key must be the backend Service's name.
+    */}}
+    alb.ingress.kubernetes.io/transforms.{{ $backend }}: >
+      [{"type": "url-rewrite", "urlRewriteConfig": {"rewrites": [{"regex": "^{{ regexQuoteMeta $route | replace "\\" "\\\\" }}/?(.*)$", "replace": "{{ printf "%s/" (trimSuffix "/" $svc.rewrite) }}$1"}]}}]
     {{- end }}
     {{- with $svc.ingressAnnotations }}
     {{- toYaml . | nindent 4 }}
     {{- end }}
 spec:
-  ingressClassName: {{ $.Values.global.ingress.className }}
+  ingressClassName: {{ $ing.className }}
   rules:
-    {{- with $.Values.global.ingress.host }}
+    {{- with $ing.host }}
     - host: {{ . | quote }}
       http:
     {{- else }}
     - http:
     {{- end }}
         paths:
-          - path: {{ if $svc.rewrite }}{{ $svc.route | trimSuffix "/" }}(/|$)(.*){{ else }}{{ $svc.route }}{{ end }}
-            pathType: {{ if $svc.rewrite }}ImplementationSpecific{{ else }}Prefix{{ end }}
+          - path: {{ $route }}
+            pathType: Prefix
             backend:
               service:
-                name: {{ include "services.name" $ctx }}
+                name: {{ $backend }}
                 port:
                   number: {{ $svc.service.port }}
 {{- end }}

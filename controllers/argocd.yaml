@@ -1,0 +1,78 @@
+# Argo CD — the GitOps controller. Every team's services, and the team
+# namespaces themselves, are Applications it reconciles from this repository.
+#
+#   chart  argo-cd 10.10.2   (argoproj/argo-helm)
+#   app    v3.5.4
+#
+# `make argocd-install` installs it; `make argocd-expose` puts the UI on the
+# shared ALB at argocd.<site_hostname>, for ADMIN_ALLOWED_CIDRS only.
+
+global:
+  # Who did what, in the controller's and server's logs: JSON, so CloudWatch
+  # Logs Insights can query sync events by application and user.
+  logging:
+    format: json
+
+configs:
+  params:
+    # TLS ends at the ALB, which forwards plain HTTP inside the VPC. Left on,
+    # argocd-server answers that HTTP with a redirect to HTTPS, and the ALB
+    # health check — and the browser — loop on it.
+    server.insecure: true
+
+  cm:
+    # Every sync records the git revision it applied; keep the last 20 per
+    # Application, which is the rollback menu `argocd app rollback` offers.
+    application.resourceTrackingMethod: annotation
+    timeout.reconciliation: 180s
+
+    # Jenkins's account. API tokens only — it cannot log in to the UI — and
+    # the RBAC below lets it read and sync Applications and nothing else.
+    # `make argocd-ci-token WORKSPACE=<ws>` mints its token.
+    accounts.ci: apiKey
+
+  rbac:
+    # Everything not granted is denied: an unknown user sees nothing.
+    policy.default: ""
+    policy.csv: |
+      p, role:ci, applications, get,  */*, allow
+      p, role:ci, applications, sync, */*, allow
+      g, ci, role:ci
+
+  # Admin is the only local user. Its initial password is in the
+  # argocd-initial-admin-secret Secret (make argocd-password); change it, then
+  # delete that Secret.
+  secret:
+    createSecret: true
+
+controller:
+  resources:
+    requests: { cpu: 250m, memory: 512Mi }
+    limits: { memory: 1Gi }
+
+server:
+  resources:
+    requests: { cpu: 50m, memory: 128Mi }
+    limits: { memory: 256Mi }
+
+repoServer:
+  resources:
+    requests: { cpu: 50m, memory: 128Mi }
+    limits: { memory: 512Mi }
+
+applicationSet:
+  resources:
+    requests: { cpu: 10m, memory: 64Mi }
+    limits: { memory: 128Mi }
+
+redis:
+  resources:
+    requests: { cpu: 10m, memory: 64Mi }
+    limits: { memory: 128Mi }
+
+# Not used: no Dex SSO and no notifications controller in this setup.
+dex:
+  enabled: false
+
+notifications:
+  enabled: false

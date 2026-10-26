@@ -8,11 +8,13 @@
 #       api-service/services.yaml    auth-api, core-api
 #       web-service/services.yaml    client-side
 #     helm/env/
-#       dev.yaml staging.yaml prod.yaml    tags and replicas, per environment
+#       dev.yaml uat.yaml prod.yaml    tags and replicas, per environment
 #
-# Adding a service is a block under `services:` in the right group file —
-# `make svc-add` writes it, and Terraform reads the same file to create the
-# ECR repository. Removing one is deleting that block.
+# A group is a team: it deploys into the namespace of the same name, through
+# its own Argo CD Application and AppProject. Adding a service is a block
+# under `services:` in the right group file — `make svc-add` writes it. Its
+# ECR repository is Terraform's (global/, var.services). Removing one is
+# deleting that block.
 #
 # Merge order, most general to most specific:
 #
@@ -96,6 +98,25 @@ defaults:
       maxUnavailable: 0     # never drop below `replicas` during a rollout
       maxSurge: 1
 
+  # Keeps one pod up while a node is drained — by Cluster Autoscaler scaling
+  # down, or a node group rolling onto a new AMI. Only rendered when there are
+  # two or more pods to keep one of; with one, it would block the drain forever.
+  pdb:
+    enabled: true
+    minAvailable: 1
+
+  # Spread replicas across availability zones, so an AZ outage costs a share
+  # of the capacity rather than the service. ScheduleAnyway: a preference, so
+  # a two-AZ dev cluster still schedules a third replica.
+  topologySpread:
+    enabled: true
+    whenUnsatisfiable: ScheduleAnyway
+
+  # ALB rule order within the group, lowest first. A route of "/" matches
+  # every path, so it must come after the specific ones — the template gives
+  # it 1000 and everything else 100 unless a service names its own.
+  # ingressOrder: 100
+
   env: {}                   # plain values, rendered inline
   config: {}                # values that become a ConfigMap + envFrom
   envFrom: []               # existing Secrets/ConfigMaps, by name
@@ -109,48 +130,54 @@ global:
   # Prefixed to every image.repository that is not already fully qualified, so
   # the registry is named once rather than in every entry.
   #
-  # Empty here, and not set in any values file: the Makefile passes it from
-  # Terraform, which is the only thing that knows the account and region the
-  # repositories were actually created in.
+  # Empty here, and not set in any values file: it carries the AWS account id
+  # and this repository is public. The Makefile and the Argo CD Application
+  # pass it from the platform facts Terraform publishes to SSM:
   #
-  #   make helm-deploy WORKSPACE=dev
-  #     --set global.imageRegistry=$(terraform output -raw ecr_image_prefix)
-  #     → <account>.dkr.ecr.<region>.amazonaws.com/<project>
+  #   --set global.imageRegistry=<account>.dkr.ecr.<region>.amazonaws.com/<project>
   #
   # Which is why `helm template helm/services -f ...` run by hand renders
   # `auth-api:0.1.0` and the Makefile does not. Use `make helm-render`.
   imageRegistry: ""
 
-  # ECR needs one of these, and nothing in this repository creates it yet.
-  #
-  # The node role already has ecr:GetAuthorizationToken and the pull actions,
-  # but IAM permission is not a registry login. The kubelet has to exchange one
-  # for the other, and it no longer knows how on its own: the in-tree ECR
-  # credential provider was removed, replaced by an ecr-credential-provider
-  # binary the kubelet execs via --image-credential-provider-config. Kubespray
-  # v2.31.0 configures neither — there is no credential_provider variable in
-  # the release at all.
-  #
-  # So without either that plugin on the nodes or a real `regcred` Secret here,
-  # every pull is 401 Unauthorized and every pod lands in ImagePullBackOff.
-  # An ECR token also expires after 12 hours, which is why the Secret route
-  # needs something refreshing it rather than one kubectl command.
-  imagePullSecrets:
-    - name: regcred
+  # None on EKS. The nodes pull from ECR with their own IAM role
+  # (AmazonEC2ContainerRegistryPullOnly), so there is no registry password to
+  # put in a Secret, and nothing to refresh every 12 hours.
+  imagePullSecrets: []
+
+  # Which groups this release renders. Empty renders every group — what
+  # `helm template` with no flags shows. Each team's Argo CD Application and
+  # `make helm-deploy` set it to the one team they deploy, because the
+  # environment file below names every team's services and a release lives in
+  # one namespace.
+  groups: []
 
   ingress:
     enabled: true
-    className: nginx
 
-    # host restricts an Ingress rule to one Host header. Unset = match any,
-    # which is what the ALB's DNS name needs until you own a domain — and what
-    # keeps it working behind anything that rewrites Host, like CloudFront.
-    # host: apps.example.com
+    # The AWS Load Balancer Controller's class. Every Ingress with it becomes
+    # rules on a real ALB — no in-cluster proxy in between, and the targets are
+    # pod IPs directly.
+    className: alb
+
+    # Every Ingress naming the same group shares ONE load balancer: one ALB per
+    # environment, not one per service (~$16/month each). Rules from different
+    # namespaces merge into it, ordered by `order` below.
+    group: ""
+
+    # The hostname the rules match, and that external-dns publishes. Empty
+    # matches any Host header — the ALB's own DNS name then works, over HTTP.
+    host: ""
+
+    # HTTPS. Empty with a host set still works: the controller looks up an
+    # issued ACM certificate covering the host. Naming it is just explicit.
+    certificateArn: ""
+
+    # TLS 1.3, falling back to 1.2. The ALB default still allows 1.0 and 1.1.
+    sslPolicy: ELBSecurityPolicy-TLS13-1-2-2021-06
 
     # Display only: never rendered into a manifest, only into NOTES.txt and
-    # `make url`. Passed by the Makefile from Terraform's alb_url output, for
-    # the same reason imageRegistry is — it is a fact about the environment
-    # you applied, not a choice anyone makes in Helm.
+    # `make url`.
     url: ""
 
 # ─── Groups ──────────────────────────────────────────────────────────────────

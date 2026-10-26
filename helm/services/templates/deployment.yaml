@@ -125,6 +125,15 @@ spec:
       volumes:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+      {{- if $svc.topologySpread.enabled }}
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: {{ $svc.topologySpread.whenUnsatisfiable }}
+          labelSelector:
+            matchLabels:
+              {{- include "services.selectorLabels" $ctx | nindent 14 }}
+      {{- end }}
       {{- with $svc.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

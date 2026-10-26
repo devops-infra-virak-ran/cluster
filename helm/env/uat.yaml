@@ -1,0 +1,48 @@
+# ─── uat ─────────────────────────────────────────────────────────────────────
+# Prod-shaped, dev-sized. Two replicas minimum everywhere: the smallest count
+# that makes a rolling update actually roll, and that lets a node drain
+# without an outage (the PodDisruptionBudget keeps one up).
+#
+# Merged LAST, on top of helm/values/<group>/services.yaml, so anything named
+# here wins:
+#
+#   -f helm/values/<team>/services.yaml    the catalogue
+#   -f helm/env/uat.yaml                   this file
+#
+# The tags are the release. A tag here was accepted in dev first, and is the
+# same image — promotion copies the line, it never rebuilds.
+
+groups:
+  api-service:
+    services:
+      auth-api:
+        image: { tag: "prod.v3.0.5" }
+        autoscaling:
+          enabled: true
+          minReplicas: 2
+          maxReplicas: 4
+          targetCPUUtilizationPercentage: 70
+
+      core-api:
+        image: { tag: "prod.v2.0.2" }
+        autoscaling:
+          enabled: true
+          minReplicas: 2
+          maxReplicas: 4
+          targetCPUUtilizationPercentage: 70
+
+  web-service:
+    services:
+      client-side:
+        image: { tag: "prod.v1.0.7" }
+        autoscaling:
+          enabled: true
+          minReplicas: 2
+          maxReplicas: 4
+          targetCPUUtilizationPercentage: 70
+
+teams:
+  api-service:
+    quota: { cpu: "3", memory: 6Gi, pods: "30" }
+  web-service:
+    quota: { cpu: "2", memory: 3Gi, pods: "15" }

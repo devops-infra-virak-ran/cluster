@@ -3,7 +3,7 @@
 # One platform fact, without Terraform.
 #
 #   scripts/platform.sh <workspace> <key>
-#   scripts/platform.sh dev alb_url
+#   scripts/platform.sh dev cluster_name
 #
 # These are the values the infrastructure produces and this project consumes.
 # Reading them here rather than running `terraform output` means this project
@@ -12,15 +12,16 @@
 #
 # Resolution order, first hit wins:
 #
-#   1. environment variable             ALB_URL=... make helm-deploy
+#   1. environment variable             SITE_URL=... make helm-deploy
 #   2. platform/<workspace>.local.env   THIS machine — gitignored
-#   3. platform/<workspace>.env         the environment — checked into git
+#   3. platform/<workspace>.env         the environment — written by
+#                                       `make platform-pull` from SSM, gitignored
 #   4. AWS SSM Parameter Store          only when PLATFORM_SSM_PREFIX is set
 #
 # Layers 2 and 3 are the important split. Facts about the environment (the
-# load balancer's address, the registry, the NodePort) are the same for
-# everyone and belong in git. Facts about the machine you are sitting at
-# (where your SSH key lives) are yours alone and must not be.
+# cluster, the registry, the hostname) are the same for everyone and come from
+# Terraform through SSM. Facts about the machine you are sitting at (which
+# addresses may reach the admin UI) are yours alone.
 #
 # Add --origin as a third argument to print which layer answered, instead of
 # the value. That is what `make platform` uses.
@@ -38,9 +39,10 @@ WORKSPACE="${1:-}"
 KEY="${2:-}"
 if [[ -z "${WORKSPACE}" || -z "${KEY}" ]]; then
   echo "usage: $(basename "$0") <workspace> <key>" >&2
-  echo "       keys: region cluster_name ecr_image_prefix alb_url alb_dns_name" >&2
-  echo "             ingress_nodeport bastion_ip control_plane_ip node_ssh_user" >&2
-  echo "             ssh_private_key_path site_url admin_allowed_cidrs" >&2
+  echo "       keys: region cluster_name vpc_id ecr_image_prefix ecr_registry_url" >&2
+  echo "             public_subnet_cidrs secrets_name_prefix secrets_role_prefix" >&2
+  echo "             site_url site_hostname certificate_arn route53_zone_id" >&2
+  echo "             admin_allowed_cidrs" >&2
   exit 1
 fi
 
@@ -79,7 +81,7 @@ if value="$(read_file "${LOCAL}")"; then
   emit "${value}" local
 fi
 
-# 3. The environment, shared through git.
+# 3. The environment, as last pulled from SSM.
 if value="$(read_file "${SHARED}")"; then
   emit "${value}" shared
 fi
@@ -89,7 +91,9 @@ fi
 # failure when there are no credentials — would be felt on every command.
 #
 #   PLATFORM_SSM_PREFIX=/platform make helm-deploy WORKSPACE=dev
-#     → reads /platform/dev/alb_url
+#     → reads /platform/dev/cluster_name
+#
+# `make platform-pull` is the usual way: one call that writes layer 3.
 if [[ -n "${PLATFORM_SSM_PREFIX:-}" ]] && command -v aws >/dev/null 2>&1; then
   region="${AWS_REGION:-$(sed -n 's/^[[:space:]]*REGION[[:space:]]*=[[:space:]]*//p' "${SHARED}" 2>/dev/null | head -1)}"
   if [[ "${ORIGIN}" == true ]]; then printf 'ssm'; exit 0; fi

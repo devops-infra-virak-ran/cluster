@@ -1,0 +1,67 @@
+# ─── Teams ───────────────────────────────────────────────────────────────────
+#
+# One entry per team. The name is the namespace, the group in
+# helm/values/<team>/services.yaml, and the name Terraform gives the team's
+# secret and IAM role (var.teams) — the three are matched by name, so they
+# must agree.
+#
+# Merge order: `defaults` here, then the team's entry here, then the team's
+# entry under `teams:` in helm/env/<workspace>.yaml (sizing per environment).
+
+defaults:
+  # Caps on everything the namespace's pods REQUEST, summed. A deploy that
+  # would go over is refused at admission — the Deployment exists, its new
+  # ReplicaSet reports "exceeded quota", and no pod starts. That is the point:
+  # one team's runaway HPA cannot starve the others.
+  quota:
+    cpu: "2"            # requests.cpu
+    memory: 4Gi         # requests.memory
+    # limitsMemory:     # limits.memory — unset, so only requests are capped
+    pods: "20"
+    services: "10"
+    persistentvolumeclaims: "5"
+
+  # Applied to any container that states no resources of its own. Without it
+  # a pod with no requests counts as zero against the quota and is scheduled
+  # as if it needed nothing.
+  limits:
+    defaultRequest: { cpu: 100m, memory: 128Mi }
+    default: { memory: 512Mi }
+    max: { memory: 2Gi }
+
+  # Who may reach this namespace's pods. Its own namespace always; the ALB
+  # always (its nodes are in the public subnets, global.albSourceCidrs); and
+  # any team named here.
+  allowFrom: []
+
+  # Kubernetes group the team's IAM identity is mapped into by its EKS access
+  # entry (terraform var.team_access → kubernetes_groups = ["team:<name>"]).
+  # Bound to the built-in `edit` ClusterRole in this namespace only.
+  rbac:
+    clusterRole: edit
+
+teams:
+  api-service:
+    # The frontend's server-side rendering calls auth-api directly.
+    allowFrom: [web-service]
+
+  web-service: {}
+
+# ─── Environment facts ───────────────────────────────────────────────────────
+# Set by the Makefile and the Argo CD Application from the platform facts
+# Terraform publishes; nothing here is committed per environment.
+
+global:
+  # The public subnets' CIDRs. With target-type ip, the ALB connects to pods
+  # from addresses in these. Comma-separated, as SSM stores it. Empty skips
+  # the ALB rule — and then every Ingress returns 502.
+  albSourceCidrs: ""
+
+  # External Secrets. A team's secret is <secretsNamePrefix>/<team>, read by
+  # assuming <secretsRolePrefix><team>. Either empty skips the secret wiring.
+  region: ""
+  secretsNamePrefix: ""
+  secretsRolePrefix: ""
+
+  # Off switch for every NetworkPolicy, for when one is the suspect.
+  networkPolicies: true

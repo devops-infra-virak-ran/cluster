@@ -1,0 +1,43 @@
+# external-dns — publishes each Ingress host as a Route 53 alias to its ALB.
+#
+#   chart  external-dns 1.23.0   (kubernetes-sigs)
+#   app    0.23.0
+#
+# `make controllers` passes the zone id and the cluster name as the owner id.
+# No domain filter: one naming dev.<zone> is narrower than the zone, and
+# external-dns then ignores the zone and writes nothing (seen 2026-10-26).
+#
+# All three environments write into the same hosted zone. txtOwnerId is what
+# keeps them apart: every record external-dns creates gets a TXT record naming
+# its owner, and with policy=sync it deletes only records it owns. Without it,
+# prod's external-dns would see dev's records as stale and delete them.
+
+serviceAccount:
+  create: true
+  name: external-dns
+
+provider:
+  name: aws
+
+sources:
+  - ingress
+
+# sync: create, update AND delete — a removed Ingress takes its record with
+# it. upsert-only would leave dangling names pointing at deleted ALBs.
+policy: sync
+
+registry: txt
+
+# Re-check every minute, and also as soon as an Ingress changes.
+interval: 1m
+triggerLoopOnEvent: true
+
+# extraArgs is not set here: `make controllers` passes the whole list with
+# --set-json (the hosted zone's id), and a list given on the command line
+# replaces this one rather than merging with it. Records for an ALB are alias
+# A records by default — the apex cannot hold a CNAME, and alias queries are
+# free.
+
+resources:
+  requests: { cpu: 10m, memory: 64Mi }
+  limits: { memory: 128Mi }

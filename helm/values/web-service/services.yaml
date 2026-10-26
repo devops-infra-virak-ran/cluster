@@ -1,12 +1,12 @@
 # ─── web-service ─────────────────────────────────────────────────────────────
-# Browser-facing services, served at the root.
+# The frontend team. Browser-facing services, served at the root, deployed
+# into the `web-service` namespace through its own Argo CD Application.
 #
 #   add a service     append a block under `services:`  (make svc-add)
 #   remove a service  delete its block                  (make svc-rm)
 #
 # The catalogue: which web services exist, and what is true about them in every
-# environment. Terraform reads the names out of it to create their ECR
-# repositories. Image tags and replica counts differ per environment and live
+# environment. Image tags, replicas and scaling differ per environment and live
 # in helm/env/<workspace>.yaml, which merges on top of this file.
 
 groups:
@@ -24,17 +24,27 @@ groups:
         # before it ever listens, and the pod crash-loops for no visible reason.
         initialDelaySeconds: 20
 
+      envFrom:
+        - secretRef: { name: app-env }
+
     # ─── The services ────────────────────────────────────────────────────────
     services:
 
       # The Nuxt frontend.
       client-side:
-        # Served at the root, not /api/client-side — so the route is named
-        # explicitly instead of coming from the group's routePrefix.
+        # Served at the root — the catch-all rule on the shared ALB, ordered
+        # after every /api/* rule (see templates/ingress.yaml).
         route: /
         env:
           # Two different addresses for the same API, on purpose:
           #   the browser leaves the cluster and comes back via the ALB
           NUXT_PUBLIC_API_BASE: /api
-          #   server-side rendering stays inside and dials the Service
-          AUTH_INTERNAL_URL: http://auth-api:80
+          #   server-side rendering stays inside and dials the Services
+          #   (nuxt.config.ts runtimeConfig authUrl / backendUrl) — in the
+          #   api-service namespace, so the full name: a bare apps-auth-api
+          #   only resolves inside api-service itself. Its NetworkPolicy admits
+          #   this namespace (helm/teams). Set here rather than in the app-env
+          #   Secret because a value in the pod spec wins over envFrom, and
+          #   these are addresses, not secrets.
+          NUXT_AUTH_URL: http://apps-auth-api.api-service.svc.cluster.local
+          NUXT_BACKEND_URL: http://apps-core-api.api-service.svc.cluster.local

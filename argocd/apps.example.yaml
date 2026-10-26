@@ -1,0 +1,146 @@
+# Argo CD projects and Applications for ONE environment.
+#
+# This is the template. Do not apply it directly: the registry (it carries the
+# account id), the hostname and the subnet CIDRs are per-environment facts,
+# and this repository is public. Render a filled-in copy:
+#
+#   make argocd-apps WORKSPACE=dev   # writes argocd/rendered-dev.yaml (gitignored) and applies it
+#
+# The render emits the PLATFORM block once and the TEAM block once per team —
+# one per directory under helm/values/. Placeholders:
+#
+#   __WORKSPACE__ __TEAM__ __REPO_URL__ __TARGET_REVISION__
+#   __ECR_IMAGE_PREFIX__ __SITE_HOST__ __SITE_URL__ __ALB_GROUP__ __CERT_ARN__
+#   __REGION__ __ALB_CIDRS__ __SECRETS_NAME_PREFIX__ __SECRETS_ROLE_PREFIX__
+#   __AUTOMATED__   the syncPolicy.automated block, or nothing for prod
+#
+# ─── PLATFORM ────────────────────────────────────────────────────────────────
+# The team namespaces and their guardrails (helm/teams). Its own project,
+# because it is the one thing allowed to create namespaces, quotas and RBAC.
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: platform
+  namespace: argocd
+spec:
+  description: Team namespaces, quotas, RBAC, network policies, secret wiring
+  sourceRepos:
+    - __REPO_URL__
+  destinations:
+    - server: https://kubernetes.default.svc
+      namespace: "*"
+  clusterResourceWhitelist:
+    - group: ""
+      kind: Namespace
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: teams-__WORKSPACE__
+  namespace: argocd
+  labels:
+    environment: __WORKSPACE__
+spec:
+  project: platform
+  source:
+    repoURL: __REPO_URL__
+    targetRevision: __TARGET_REVISION__
+    path: helm/teams
+    helm:
+      releaseName: teams
+      # Relative to the chart: helm/teams → helm/env/<ws>.yaml, for the
+      # `teams:` sizing at the bottom of it.
+      valueFiles:
+        - ../env/__WORKSPACE__.yaml
+      valuesObject:
+        global:
+          region: __REGION__
+          albSourceCidrs: "__ALB_CIDRS__"
+          secretsNamePrefix: __SECRETS_NAME_PREFIX__
+          secretsRolePrefix: __SECRETS_ROLE_PREFIX__
+  # Every object names its own namespace; this is only where the release is
+  # anchored — the same place `make teams` installs it.
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: kube-system
+  syncPolicy:
+    # __AUTOMATED__
+    syncOptions:
+      - ApplyOutOfSyncOnly=true
+# ─── TEAM ────────────────────────────────────────────────────────────────────
+# One project per team. It may deploy into its own namespace only, may create
+# no cluster-wide object, and may not touch the guardrails the platform set
+# there — so a team's git repo can never lift its own quota or open its
+# network policy, even by accident.
+---
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: __TEAM__
+  namespace: argocd
+spec:
+  description: __TEAM__ services, in the __TEAM__ namespace only
+  sourceRepos:
+    - __REPO_URL__
+  destinations:
+    - server: https://kubernetes.default.svc
+      namespace: __TEAM__
+  clusterResourceWhitelist: []
+  namespaceResourceBlacklist:
+    - { group: "", kind: ResourceQuota }
+    - { group: "", kind: LimitRange }
+    - { group: networking.k8s.io, kind: NetworkPolicy }
+    - { group: rbac.authorization.k8s.io, kind: Role }
+    - { group: rbac.authorization.k8s.io, kind: RoleBinding }
+    - { group: external-secrets.io, kind: SecretStore }
+    - { group: external-secrets.io, kind: ExternalSecret }
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: __TEAM__-__WORKSPACE__
+  namespace: argocd
+  labels:
+    environment: __WORKSPACE__
+    team: __TEAM__
+  # Deleting the Application deletes what it deployed — the Ingress first, so
+  # the ALB rules go with it. `make cluster-down` relies on this.
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: __TEAM__
+  # How many past syncs Argo CD remembers — the list `argocd app rollback`
+  # chooses from. Each entry is a git revision and the images it ran.
+  revisionHistoryLimit: 20
+  source:
+    repoURL: __REPO_URL__
+    targetRevision: __TARGET_REVISION__
+    path: helm/services
+    helm:
+      # The same release name in every team namespace, so Services are
+      # apps-<service> everywhere and the URLs in the catalogue hold.
+      releaseName: apps
+      valueFiles:
+        - ../values/__TEAM__/services.yaml
+        - ../env/__WORKSPACE__.yaml
+      valuesObject:
+        global:
+          groups: [__TEAM__]
+          imageRegistry: __ECR_IMAGE_PREFIX__
+          ingress:
+            group: __ALB_GROUP__
+            host: "__SITE_HOST__"
+            certificateArn: "__CERT_ARN__"
+            url: "__SITE_URL__"
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: __TEAM__
+  syncPolicy:
+    # __AUTOMATED__
+    syncOptions:
+      - ApplyOutOfSyncOnly=true
+    # A failed sync retries with backoff instead of waiting for the next
+    # commit — an image still being pushed, a quota freed a moment later.
+    retry:
+      limit: 3
+      backoff: { duration: 10s, factor: 2, maxDuration: 2m }

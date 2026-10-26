@@ -1,0 +1,45 @@
+# AWS Load Balancer Controller — turns Ingress objects into ALBs.
+#
+#   chart  aws-load-balancer-controller 3.5.0   (eks-charts)
+#   app    v3.5.0 — the IAM policy in terraform/modules/eks/policies/ is
+#          this exact version's; upgrade the two together
+#
+# `make controllers` installs it with clusterName, region and vpcId from the
+# platform facts. Those three are passed rather than discovered because the
+# nodes' instance metadata is the only other source, and a pod reading it is
+# exactly what IMDS hop limits are meant to stop.
+
+# Must match the pod identity association Terraform made. Any other name runs
+# with no AWS permissions, and every Ingress sits with no address and
+# "AccessDenied" in the controller log.
+serviceAccount:
+  create: true
+  name: aws-load-balancer-controller
+
+replicaCount: 2
+
+# One controller pod down at a time when its node drains.
+podDisruptionBudget:
+  maxUnavailable: 1
+
+# The IngressClass the services chart names (global.ingress.className).
+createIngressClassResource: true
+ingressClass: alb
+
+# Ingress targets are pod IPs, matching the chart's target-type annotation —
+# set here too so an Ingress that forgets the annotation behaves the same.
+defaultTargetType: ip
+
+# Every AWS object it creates is tagged, so cost reports and cleanup can find
+# what came from inside the cluster rather than from Terraform.
+defaultTags:
+  ManagedBy: aws-load-balancer-controller
+
+# It also mutates Services of type LoadBalancer to use NLBs. The team quotas
+# allow none of those, so the webhook has nothing to do — off, one less thing
+# in the admission path.
+enableServiceMutatorWebhook: false
+
+resources:
+  requests: { cpu: 50m, memory: 128Mi }
+  limits: { memory: 256Mi }
