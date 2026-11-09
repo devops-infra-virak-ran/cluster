@@ -28,6 +28,17 @@ policy: sync
 
 registry: txt
 
+# Needed because prod's site is the zone apex. With no prefix, the TXT record
+# for devops-selft-learning.xyz is named a-devops-selft-learning.xyz: a
+# different domain, outside the zone, so it is dropped with no error. The A
+# record then has no owner, and external-dns never updates or deletes it, so a
+# new ALB leaves DNS pointing at a deleted one. %{record_type} and the trailing
+# dot keep it in the zone: extdns-a.devops-selft-learning.xyz.
+#
+# Do not change this once records exist: the old TXT names stop being read, and
+# those records lose their owner the same way.
+txtPrefix: "extdns-%{record_type}."
+
 # Re-check every minute, and also as soon as an Ingress changes.
 interval: 1m
 triggerLoopOnEvent: true
