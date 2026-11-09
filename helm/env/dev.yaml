@@ -29,7 +29,7 @@ groups:
   web-service:
     services:
       client-side:
-        image: { tag: "dev-df656eb" }
+        image: { tag: "dev-af3a4e5" }
         autoscaling:
           enabled: true
           minReplicas: 1
