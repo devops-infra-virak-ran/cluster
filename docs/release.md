@@ -2,15 +2,18 @@
 
 ## The model
 
-- **An image is built once.** Its tag is immutable in ECR, so a tag names one
-  image forever.
+- **An image is built once.** Each environment it reaches only adds a name:
+  `dev-5a87e72` → `uat-5a87e72` → `prod-v1.0.8`, one digest. Tags are
+  immutable in ECR, so a name means one image forever.
 - **A deploy is a git commit** that moves a tag in `helm/env/<ws>.yaml`.
   Argo CD runs whatever this repository says.
-- **Promotion copies the tag** from one environment's file to the next. The
-  image uat accepted is byte-for-byte the image prod runs.
+- **Promotion names the source's image for the target** and commits that
+  name to the next environment's file. The image uat accepted is
+  byte-for-byte the image prod runs. prod's name is the commit's `vX.Y.Z`
+  git tag, so tag the release before promoting it.
 
 ```
-push to main → Jenkins: tests, scans, gates, build once, push to ECR
+push to develop → Jenkins: tests, scans, gates, build once, push dev-<sha>
         │  commits the tag
         ▼
 helm/env/dev.yaml ──auto-sync──► dev           Jenkins waits, smoke-tests, records
@@ -76,8 +79,9 @@ make argocd-sync WORKSPACE=prod                   # dev/uat sync by themselves
 ```
 
 The previous image is still in ECR — tags are immutable, and the lifecycle
-policy keeps the last 30 images tagged `v*`/`release*` and the last 10 of any
-other tag — so a rollback to a recent release pulls an image that exists.
+policy keeps the last 100 `prod-*`, 30 `uat-*`, 30 `dev-*` and 50 other images,
+an image prod ever ran being kept by the `prod-` rule — so a rollback to a
+recent release pulls an image that exists.
 
 **Faster, while the fix is being written:** Argo CD's own rollback re-applies
 an earlier sync without a commit. Auto-sync must be off for the app, or it
