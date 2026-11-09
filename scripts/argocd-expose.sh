@@ -47,6 +47,8 @@ fi
 site="$("${PLATFORM}" "${WORKSPACE}" site_hostname || true)"
 cert="$("${PLATFORM}" "${WORKSPACE}" certificate_arn || true)"
 group="$("${PLATFORM}" "${WORKSPACE}" cluster_name || true)"
+waf="$("${PLATFORM}" "${WORKSPACE}" waf_acl_arn || true)"
+logs="$("${PLATFORM}" "${WORKSPACE}" alb_logs_bucket || true)"
 if [[ -z "${site}" || -z "${cert}" ]]; then
   echo "error: '${WORKSPACE}' has no site_hostname or certificate_arn — no domain," >&2
   echo "       so there is no name to publish the UI under. Use the port-forward:" >&2
@@ -78,7 +80,10 @@ sed -e "s#__WORKSPACE__#${WORKSPACE}#g" \
     -e "s#__ALB_GROUP__#${group}#g" \
     -e "s#__CERT_ARN__#${cert}#g" \
     -e "s#__ALLOWED_CIDRS_JSON__#${cidrs_json}#g" \
-    "${TEMPLATE}" > "${out}"
+    "${TEMPLATE}" \
+  | if [[ -n "${waf}" ]]; then sed "s#__WAF_ACL_ARN__#${waf}#g"; else sed "/__WAF_ACL_ARN__/d"; fi \
+  | if [[ -n "${logs}" ]]; then sed "s#__ALB_LOGS_BUCKET__#${logs}#g"; else sed "/__ALB_LOGS_BUCKET__/d"; fi \
+  > "${out}"
 
 echo "==> rendered ${out#"${ROOT}/"}"
 echo "    host      ${hostname}"

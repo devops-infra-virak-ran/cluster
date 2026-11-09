@@ -11,6 +11,7 @@
 #
 #   __WORKSPACE__ __TEAM__ __REPO_URL__ __TARGET_REVISION__
 #   __ECR_IMAGE_PREFIX__ __SITE_HOST__ __SITE_URL__ __ALB_GROUP__ __CERT_ARN__
+#   __WAF_ACL_ARN__ __ALB_LOGS_BUCKET__
 #   __REGION__ __ALB_CIDRS__ __SECRETS_NAME_PREFIX__ __SECRETS_ROLE_PREFIX__
 #   __AUTOMATED__   the syncPolicy.automated block, or nothing for prod
 #
@@ -131,6 +132,8 @@ spec:
             group: __ALB_GROUP__
             host: "__SITE_HOST__"
             certificateArn: "__CERT_ARN__"
+            wafAclArn: "__WAF_ACL_ARN__"
+            accessLogsBucket: "__ALB_LOGS_BUCKET__"
             url: "__SITE_URL__"
   destination:
     server: https://kubernetes.default.svc

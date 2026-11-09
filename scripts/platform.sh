@@ -41,7 +41,7 @@ if [[ -z "${WORKSPACE}" || -z "${KEY}" ]]; then
   echo "usage: $(basename "$0") <workspace> <key>" >&2
   echo "       keys: region cluster_name vpc_id ecr_image_prefix ecr_registry_url" >&2
   echo "             public_subnet_cidrs secrets_name_prefix secrets_role_prefix" >&2
-  echo "             site_url site_hostname certificate_arn route53_zone_id" >&2
+  echo "             site_url site_hostname certificate_arn route53_zone_id waf_acl_arn alb_logs_bucket" >&2
   echo "             admin_allowed_cidrs" >&2
   exit 1
 fi

@@ -173,6 +173,16 @@ global:
     # issued ACM certificate covering the host. Naming it is just explicit.
     certificateArn: ""
 
+    # WAF web ACL for the ALB — Terraform's (terraform/waf.tf), from SSM
+    # waf_acl_arn. Every Ingress in the group carries it, so they agree; the
+    # Load Balancer Controller attaches it to the ALB. Empty: no WAF.
+    wafAclArn: ""
+
+    # ALB access logs — an S3 bucket from Terraform's monitoring module (SSM
+    # alb_logs_bucket). Every request: client IP, path, status, timings, under
+    # s3://<bucket>/alb/. Empty: no access logs.
+    accessLogsBucket: ""
+
     # TLS 1.3, falling back to 1.2. The ALB default still allows 1.0 and 1.1.
     sslPolicy: ELBSecurityPolicy-TLS13-1-2-2021-06
 

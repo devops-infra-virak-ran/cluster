@@ -57,6 +57,8 @@ define team_args
 --set global.ingress.group="$$($(PLATFORM) cluster_name 2>/dev/null)" \
 --set global.ingress.host="$$($(PLATFORM) site_hostname 2>/dev/null)" \
 --set global.ingress.certificateArn="$$($(PLATFORM) certificate_arn 2>/dev/null)" \
+--set global.ingress.wafAclArn="$$($(PLATFORM) waf_acl_arn 2>/dev/null)" \
+--set global.ingress.accessLogsBucket="$$($(PLATFORM) alb_logs_bucket 2>/dev/null)" \
 --set global.ingress.url="$$($(PLATFORM) site_url 2>/dev/null)"
 endef
 
@@ -123,7 +125,7 @@ PLATFORM_KEYS := region cluster_name vpc_id ecr_image_prefix ecr_registry_url \
 
 # Present only where the workspace has a domain, or set per machine.
 PLATFORM_KEYS_OPTIONAL := site_url site_hostname certificate_arn route53_zone_id \
-                          admin_allowed_cidrs
+                          waf_acl_arn alb_logs_bucket admin_allowed_cidrs
 
 .PHONY: platform-pull
 platform-pull: ## Write platform/<ws>.env from the facts Terraform published to SSM
@@ -158,15 +160,20 @@ kubeconfig: ## Write ~/.kube/config-<ws> for this environment's EKS cluster
 
 # ─── Bring-up ────────────────────────────────────────────────────────────────
 
+# FORCE=1 on teams and helm-deploy: a re-run finds the Applications from the last
+# one, and those two refuse to run alongside Argo CD. Helm deploys here because
+# prod's Applications wait for a manual sync, so nothing else would start it.
 .PHONY: up
-up: ## Everything after `terraform apply`: controllers, teams, secrets, Argo CD (~10 min)
+up: ## Everything after `terraform apply`: controllers, teams, secrets, services, Argo CD (~15 min)
 	@$(MAKE) --no-print-directory platform-pull WORKSPACE=$(WORKSPACE)
 	@$(MAKE) --no-print-directory kubeconfig    WORKSPACE=$(WORKSPACE)
 	@$(MAKE) --no-print-directory controllers   WORKSPACE=$(WORKSPACE)
-	@$(MAKE) --no-print-directory teams         WORKSPACE=$(WORKSPACE)
+	@FORCE=1 $(MAKE) --no-print-directory teams WORKSPACE=$(WORKSPACE)
 	@$(MAKE) --no-print-directory secrets       WORKSPACE=$(WORKSPACE)
+	@FORCE=1 $(MAKE) --no-print-directory helm-deploy WORKSPACE=$(WORKSPACE)
 	@$(MAKE) --no-print-directory argocd-install WORKSPACE=$(WORKSPACE)
 	@$(MAKE) --no-print-directory argocd-apps   WORKSPACE=$(WORKSPACE)
+	@$(MAKE) --no-print-directory argocd-expose WORKSPACE=$(WORKSPACE)
 	@echo
 	@$(MAKE) --no-print-directory url WORKSPACE=$(WORKSPACE)
 
@@ -380,6 +387,39 @@ helm-status: ## What is deployed right now, in every team namespace
 	  echo "==> $$t"; \
 	  kubectl -n $$t get deploy,hpa,pdb,ingress 2>/dev/null || true; echo; \
 	done
+
+# ─── Scaling tests ───────────────────────────────────────────────────────────
+# Watch in a second terminal while these run:
+#   kubectl get hpa -A -w        pods scaling (HPA)
+#   kubectl get nodes -w         nodes scaling (Cluster Autoscaler)
+
+K6_IMAGE ?= grafana/k6:2.2.0
+VUS      ?= 50
+HOLD     ?= 3m
+
+.PHONY: load-test
+load-test: ## Load the site through the ALB (VUS=50 HOLD=3m); prints p95 latency and error rate
+	$(need_platform)
+	@url="$$($(PLATFORM) site_url)"; test -n "$$url" || { echo "error: no site_url for $(WORKSPACE)"; exit 1; }; \
+	  echo "==> $$url — $(VUS) users, hold $(HOLD). Watch: kubectl get hpa -A -w"; \
+	  docker run --rm -i -e BASE_URL="$$url" -e VUS=$(VUS) -e HOLD=$(HOLD) $(K6_IMAGE) run - < loadtest/site.js
+
+.PHONY: node-scale-test
+node-scale-test: ## Ask for more CPU than the nodes have, so Cluster Autoscaler adds nodes
+	$(need_cluster)
+	@# The pause image does nothing; the requests are what count. 6 × 500m is
+	@# more than two c7i-flex.large nodes can place once the system pods are on
+	@# them, so some go Pending and the autoscaler adds nodes (up to node_max_size).
+	kubectl create deployment scale-test --image=registry.k8s.io/pause:3.10 --replicas=6 \
+	  --dry-run=client -o yaml | kubectl apply -f -
+	kubectl set resources deployment scale-test --requests=cpu=500m,memory=512Mi
+	@echo; echo "Watch: kubectl get pods -l app=scale-test -w   and   kubectl get nodes -w"
+	@echo "Then:  make node-scale-clean WORKSPACE=$(WORKSPACE)   (nodes drain away in ~5-10 min)"
+
+.PHONY: node-scale-clean
+node-scale-clean: ## Remove the node scale test; the autoscaler then removes the extra nodes
+	$(need_cluster)
+	kubectl delete deployment scale-test --ignore-not-found
 
 # ─── Argo CD ─────────────────────────────────────────────────────────────────
 # GitOps. Every team's services, and the team namespaces themselves, are

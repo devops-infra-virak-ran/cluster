@@ -32,6 +32,13 @@ metadata:
   annotations:
     {{- with $ing.group }}
     alb.ingress.kubernetes.io/group.name: {{ . | quote }}
+    {{/*
+      The ALB is named after its group (the cluster), not the controller's
+      random k8s-<hash>: Terraform's monitoring dashboard finds its metrics by
+      this name. A load-balancer setting, so every Ingress in the group must
+      say the same — the Argo CD Ingress does too.
+    */}}
+    alb.ingress.kubernetes.io/load-balancer-name: {{ . | quote }}
     {{- end }}
     {{/*
       "/" matches every path, so on a shared ALB it has to be evaluated last
@@ -40,6 +47,12 @@ metadata:
     alb.ingress.kubernetes.io/group.order: {{ $svc.ingressOrder | default (ternary 1000 100 (eq $route "/")) | quote }}
     alb.ingress.kubernetes.io/scheme: internet-facing
     alb.ingress.kubernetes.io/target-type: ip
+    {{- with $ing.wafAclArn }}
+    alb.ingress.kubernetes.io/wafv2-acl-arn: {{ . | quote }}
+    {{- end }}
+    {{- with $ing.accessLogsBucket }}
+    alb.ingress.kubernetes.io/load-balancer-attributes: {{ printf "access_logs.s3.enabled=true,access_logs.s3.bucket=%s,access_logs.s3.prefix=alb" . | quote }}
+    {{- end }}
     {{- if $ing.host }}
     alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}, {"HTTPS": 443}]'
     alb.ingress.kubernetes.io/ssl-redirect: "443"

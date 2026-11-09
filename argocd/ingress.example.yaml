@@ -23,6 +23,11 @@ metadata:
     workspace: __WORKSPACE__
   annotations:
     alb.ingress.kubernetes.io/group.name: __ALB_GROUP__
+    # Load-balancer settings: identical on every Ingress in the group, or the
+    # controller reports a conflict. argocd-expose.sh drops the access-log
+    # line when the environment has no bucket.
+    alb.ingress.kubernetes.io/load-balancer-name: __ALB_GROUP__
+    alb.ingress.kubernetes.io/load-balancer-attributes: access_logs.s3.enabled=true,access_logs.s3.bucket=__ALB_LOGS_BUCKET__,access_logs.s3.prefix=alb
     # Before every team rule, so its host match is evaluated first.
     alb.ingress.kubernetes.io/group.order: "10"
     alb.ingress.kubernetes.io/scheme: internet-facing
@@ -31,6 +36,10 @@ metadata:
     alb.ingress.kubernetes.io/ssl-redirect: "443"
     alb.ingress.kubernetes.io/ssl-policy: ELBSecurityPolicy-TLS13-1-2-2021-06
     alb.ingress.kubernetes.io/certificate-arn: __CERT_ARN__
+    # The WAF — the same ACL as every team Ingress on this ALB, or the
+    # controller reports a conflict. argocd-expose.sh drops the line when
+    # the environment has none.
+    alb.ingress.kubernetes.io/wafv2-acl-arn: __WAF_ACL_ARN__
     alb.ingress.kubernetes.io/healthcheck-path: /healthz
     alb.ingress.kubernetes.io/success-codes: "200"
 
